@@ -152,4 +152,4 @@ assign(Store.prototype, {
 	}
 });
 
-export { Store };
+//export { Store };
