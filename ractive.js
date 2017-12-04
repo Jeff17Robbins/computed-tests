@@ -735,7 +735,7 @@ function escapeKey ( key ) {
 }
 
 function normalise ( ref ) {
-	return ref ? ref.indexOf('[') !== -1 ? ref.replace( refPattern, '.$1' ) : '';
+	return ref ? ref.indexOf('[') !== -1 ? ref.replace( refPattern, '.$1' ) : ref : '';
 }
 
 function splitKeypath ( keypath ) {
