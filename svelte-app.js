@@ -197,7 +197,7 @@ function create_main_fragment(state, component) {
 }
 
 function App(options) {
-	init(this, options);
+	init1(this, options);
 	this._state = assign({}, options.data);
 
 	this._fragment = create_main_fragment(this._state, this);
@@ -225,7 +225,7 @@ App.prototype._recompute = noop;
 
 function noop() {}
 
-function init(component, options) {
+function init1(component, options) {
 	component._observers = { pre: blankObject(), post: blankObject() };
 	component._handlers = blankObject();
 	component._root = options._root || component;
