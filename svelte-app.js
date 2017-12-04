@@ -226,4 +226,4 @@ function dispatchObservers(component, group, changed, newState, oldState) {
 		}
 	}
 }
-export default App;
+//export default App;
