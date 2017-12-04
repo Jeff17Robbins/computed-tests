@@ -385,8 +385,9 @@ var defaults = {
 	contextLines:           0,
 
 	// data & binding:
-	data:                   {},
-	computed:               {},
+	data:                   create( null ),
+	helpers:                create( null ),
+	computed:               create( null ),
 	syncComputedChildren:   false,
 	resolveInstanceMembers: true,
 	warnAboutAmbiguity:     false,
@@ -898,8 +899,6 @@ KeyModel__proto__.getKeypath = function getKeypath () {
 	return unescapeKey( this.value );
 };
 
-KeyModel__proto__.has = function has () { return false; };
-
 KeyModel__proto__.rebind = function rebind ( next, previous ) {
 		var this$1 = this;
 
@@ -987,8 +986,6 @@ KeypathModel__proto__.handleChange = function handleChange$1 () {
 	this.deps.forEach( handleChange );
 };
 
-KeypathModel__proto__.has = function has () { return false; };
-
 KeypathModel__proto__.rebindChildren = function rebindChildren ( next ) {
 		var this$1 = this;
 
@@ -1059,6 +1056,7 @@ function bind$1 ( fn, context ) {
 
 var shuffleTasks = { early: [], mark: [] };
 var registerQueue = { early: [], mark: [] };
+var noVirtual = { virtual: false };
 
 var ModelBase = function ModelBase ( parent ) {
 	this.deps = [];
@@ -1070,7 +1068,6 @@ var ModelBase = function ModelBase ( parent ) {
 	this.keyModels = {};
 
 	this.bindings = [];
-	this.patternObservers = [];
 
 	if ( parent ) {
 		this.parent = parent;
@@ -1153,7 +1150,12 @@ ModelBase__proto__.getValueChildren = function getValueChildren ( value ) {
 	}
 
 	else if ( value != null ) {
-		return [];
+		children = [];
+	}
+
+	var computed = this.computed;
+	if ( computed ) {
+		children.push.apply( children, keys( computed ).map( function (k) { return this$1.joinKey( k ); } ) );
 	}
 
 	return children;
@@ -1164,7 +1166,7 @@ ModelBase__proto__.getVirtual = function getVirtual ( shouldCapture ) {
 
 	var value = this.get( shouldCapture, { virtual: false } );
 	if ( isObject( value ) ) {
-		var result = isArray( value ) ? [] : {};
+		var result = isArray( value ) ? [] : create( null );
 
 		var keys$$1 = keys( value );
 		var i = keys$$1.length;
@@ -1183,24 +1185,37 @@ ModelBase__proto__.getVirtual = function getVirtual ( shouldCapture ) {
 			}
 		}
 
+		if ( this.computed ) {
+			keys$$1 = keys( this.computed );
+			i = keys$$1.length;
+			while ( i-- ) {
+				result[ keys$$1[i] ] = this$1.computed[ keys$$1[i] ].get();
+			}
+		}
+
 		return result;
 	} else { return value; }
 };
 
 ModelBase__proto__.has = function has ( key ) {
+		var this$1 = this;
+
 	if ( this._link ) { return this._link.has( key ); }
 
-	var value = this.get();
+	var value = this.get( false, noVirtual );
 	if ( !value ) { return false; }
 
 	key = unescapeKey( key );
-	if ( hasOwn( value, key ) ) { return true; }
+	if ( ( isFunction( value ) || isObject( value ) ) && key in value ) { return true; }
 
-	// We climb up the constructor chain to find if one of them contains the key
-	var constructor = value.constructor;
-	while ( constructor !== Function && constructor !== Array && constructor !== Object ) {
-		if ( hasOwn( constructor.prototype, key ) ) { return true; }
-		constructor = constructor.constructor;
+	var computed = this.computed;
+	if ( computed && key in this.computed ) { return true; }
+
+	computed = this.root.ractive && this.root.ractive.computed;
+	if ( computed ) {
+		keys( computed ).forEach( function (k) {
+			if ( computed[k].pattern && computed[k].pattern.test( this$1.getKeypath() ) ) { return true; }
+		});
 	}
 
 	return false;
@@ -1222,7 +1237,7 @@ ModelBase__proto__.notifyUpstream = function notifyUpstream ( startPath ) {
 	var parent = this.parent;
 	var path = startPath || [ this.key ];
 	while ( parent ) {
-		if ( parent.patternObservers.length ) { parent.patternObservers.forEach( function (o) { return o.notify( path.slice() ); } ); }
+		if ( parent.patterns ) { parent.patterns.forEach( function (o) { return o.notify( path.slice() ); } ); }
 		path.unshift( parent.key );
 		parent.links.forEach( function (l) { return l.notifiedUpstream( path, this$1.root ); } );
 		parent.deps.forEach( function (d) { return d.handleChange( path ); } );
@@ -1278,7 +1293,7 @@ ModelBase__proto__.registerLink = function registerLink ( link ) {
 };
 
 ModelBase__proto__.registerPatternObserver = function registerPatternObserver ( observer ) {
-	this.patternObservers.push( observer );
+	( this.patterns || ( this.patterns = [] ) ).push( observer );
 	this.register( observer );
 };
 
@@ -1299,7 +1314,7 @@ ModelBase__proto__.unregisterLink = function unregisterLink ( link ) {
 };
 
 ModelBase__proto__.unregisterPatternObserver = function unregisterPatternObserver ( observer ) {
-	removeFromArray( this.patternObservers, observer );
+	removeFromArray( this.patterns, observer );
 	this.unregister( observer );
 };
 
@@ -1715,3571 +1730,6 @@ ModelBase.prototype.unlink = function unlink () {
 	}
 };
 
-var TransitionManager = function TransitionManager ( callback, parent ) {
-	this.callback = callback;
-	this.parent = parent;
-
-	this.intros = [];
-	this.outros = [];
-
-	this.children = [];
-	this.totalChildren = this.outroChildren = 0;
-
-	this.detachQueue = [];
-	this.outrosComplete = false;
-
-	if ( parent ) {
-		parent.addChild( this );
-	}
-};
-var TransitionManager__proto__ = TransitionManager.prototype;
-
-TransitionManager__proto__.add = function add ( transition ) {
-	var list = transition.isIntro ? this.intros : this.outros;
-	transition.starting = true;
-	list.push( transition );
-};
-
-TransitionManager__proto__.addChild = function addChild ( child ) {
-	this.children.push( child );
-
-	this.totalChildren += 1;
-	this.outroChildren += 1;
-};
-
-TransitionManager__proto__.decrementOutros = function decrementOutros () {
-	this.outroChildren -= 1;
-	check( this );
-};
-
-TransitionManager__proto__.decrementTotal = function decrementTotal () {
-	this.totalChildren -= 1;
-	check( this );
-};
-
-TransitionManager__proto__.detachNodes = function detachNodes () {
-	this.detachQueue.forEach( detach );
-	this.children.forEach( _detachNodes );
-	this.detachQueue = [];
-};
-
-TransitionManager__proto__.ready = function ready () {
-	if ( this.detachQueue.length ) { detachImmediate( this ); }
-};
-
-TransitionManager__proto__.remove = function remove ( transition ) {
-	var list = transition.isIntro ? this.intros : this.outros;
-	removeFromArray( list, transition );
-	check( this );
-};
-
-TransitionManager__proto__.start = function start () {
-	this.children.forEach( function (c) { return c.start(); } );
-	this.intros.concat( this.outros ).forEach( function (t) { return t.start(); } );
-	this.ready = true;
-	check( this );
-};
-
-function detach ( element ) {
-	element.detach();
-}
-
-function _detachNodes ( tm ) { // _ to avoid transpiler quirk
-	tm.detachNodes();
-}
-
-function check ( tm ) {
-	if ( !tm.ready || tm.outros.length || tm.outroChildren ) { return; }
-
-	// If all outros are complete, and we haven't already done this,
-	// we notify the parent if there is one, otherwise
-	// start detaching nodes
-	if ( !tm.outrosComplete ) {
-		tm.outrosComplete = true;
-
-		if ( tm.parent && !tm.parent.outrosComplete ) {
-			tm.parent.decrementOutros( tm );
-		} else {
-			tm.detachNodes();
-		}
-	}
-
-	// Once everything is done, we can notify parent transition
-	// manager and call the callback
-	if ( !tm.intros.length && !tm.totalChildren ) {
-		if ( isFunction( tm.callback ) ) {
-			tm.callback();
-		}
-
-		if ( tm.parent && !tm.notifiedTotal ) {
-			tm.notifiedTotal = true;
-			tm.parent.decrementTotal();
-		}
-	}
-}
-
-// check through the detach queue to see if a node is up or downstream from a
-// transition and if not, go ahead and detach it
-function detachImmediate ( manager ) {
-	var queue = manager.detachQueue;
-	var outros = collectAllOutros( manager );
-
-	var i = queue.length;
-	var j = 0;
-	var node, trans;
-	start: while ( i-- ) {
-		node = queue[i].node;
-		j = outros.length;
-		while ( j-- ) {
-			trans = outros[j].element.node;
-			// check to see if the node is, contains, or is contained by the transitioning node
-			if ( trans === node || trans.contains( node ) || node.contains( trans ) ) { continue start; }
-		}
-
-		// no match, we can drop it
-		queue[i].detach();
-		queue.splice( i, 1 );
-	}
-}
-
-function collectAllOutros ( manager, _list ) {
-	var list = _list;
-
-	// if there's no list, we're starting at the root to build one
-	if ( !list ) {
-		list = [];
-		var parent = manager;
-		while ( parent.parent ) { parent = parent.parent; }
-		return collectAllOutros( parent, list );
-	} else {
-		// grab all outros from child managers
-		var i = manager.children.length;
-		while ( i-- ) {
-			list = collectAllOutros( manager.children[i], list );
-		}
-
-		// grab any from this manager if there are any
-		if ( manager.outros.length ) { list = list.concat( manager.outros ); }
-
-		return list;
-	}
-}
-
-var batch;
-
-var runloop = {
-	start: function start () {
-		var fulfilPromise;
-		var promise = new Promise( function (f) { return ( fulfilPromise = f ); } );
-
-		batch = {
-			previousBatch: batch,
-			transitionManager: new TransitionManager( fulfilPromise, batch && batch.transitionManager ),
-			fragments: [],
-			tasks: [],
-			immediateObservers: [],
-			deferredObservers: [],
-			promise: promise
-		};
-
-		return promise;
-	},
-
-	end: function end () {
-		flushChanges();
-
-		if ( !batch.previousBatch ) { batch.transitionManager.start(); }
-
-		batch = batch.previousBatch;
-	},
-
-	addFragment: function addFragment ( fragment ) {
-		addToArray( batch.fragments, fragment );
-	},
-
-	// TODO: come up with a better way to handle fragments that trigger their own update
-	addFragmentToRoot: function addFragmentToRoot ( fragment ) {
-		if ( !batch ) { return; }
-
-		var b = batch;
-		while ( b.previousBatch ) {
-			b = b.previousBatch;
-		}
-
-		addToArray( b.fragments, fragment );
-	},
-
-	addObserver: function addObserver ( observer, defer ) {
-		if ( !batch ) {
-			observer.dispatch();
-		} else {
-			addToArray( defer ? batch.deferredObservers : batch.immediateObservers, observer );
-		}
-	},
-
-	registerTransition: function registerTransition ( transition ) {
-		transition._manager = batch.transitionManager;
-		batch.transitionManager.add( transition );
-	},
-
-	// synchronise node detachments with transition ends
-	detachWhenReady: function detachWhenReady ( thing ) {
-		batch.transitionManager.detachQueue.push( thing );
-	},
-
-	scheduleTask: function scheduleTask ( task, postRender ) {
-		var _batch;
-
-		if ( !batch ) {
-			task();
-		} else {
-			_batch = batch;
-			while ( postRender && _batch.previousBatch ) {
-				// this can't happen until the DOM has been fully updated
-				// otherwise in some situations (with components inside elements)
-				// transitions and decorators will initialise prematurely
-				_batch = _batch.previousBatch;
-			}
-
-			_batch.tasks.push( task );
-		}
-	},
-
-	promise: function promise () {
-		if ( !batch ) { return Promise.resolve(); }
-
-		var target = batch;
-		while ( target.previousBatch ) {
-			target = target.previousBatch;
-		}
-
-		return target.promise || Promise.resolve();
-	}
-};
-
-function dispatch ( observer ) {
-	observer.dispatch();
-}
-
-function flushChanges () {
-	var which = batch.immediateObservers;
-	batch.immediateObservers = [];
-	which.forEach( dispatch );
-
-	// Now that changes have been fully propagated, we can update the DOM
-	// and complete other tasks
-	var i = batch.fragments.length;
-	var fragment;
-
-	which = batch.fragments;
-	batch.fragments = [];
-
-	while ( i-- ) {
-		fragment = which[i];
-		fragment.update();
-	}
-
-	batch.transitionManager.ready();
-
-	which = batch.deferredObservers;
-	batch.deferredObservers = [];
-	which.forEach( dispatch );
-
-	var tasks = batch.tasks;
-	batch.tasks = [];
-
-	for ( i = 0; i < tasks.length; i += 1 ) {
-		tasks[i]();
-	}
-
-	// If updating the view caused some model blowback - e.g. a triple
-	// containing <option> elements caused the binding on the <select>
-	// to update - then we start over
-	if ( batch.fragments.length || batch.immediateObservers.length || batch.deferredObservers.length || batch.tasks.length ) { return flushChanges(); }
-}
-
-// TODO what happens if a transition is aborted?
-
-var tickers = [];
-var running = false;
-
-function tick () {
-	runloop.start();
-
-	var now = performance.now();
-
-	var i;
-	var ticker;
-
-	for ( i = 0; i < tickers.length; i += 1 ) {
-		ticker = tickers[i];
-
-		if ( !ticker.tick( now ) ) {
-			// ticker is complete, remove it from the stack, and decrement i so we don't miss one
-			tickers.splice( i--, 1 );
-		}
-	}
-
-	runloop.end();
-
-	if ( tickers.length ) {
-		requestAnimationFrame( tick );
-	} else {
-		running = false;
-	}
-}
-
-var Ticker = function Ticker ( options ) {
-	this.duration = options.duration;
-	this.step = options.step;
-	this.complete = options.complete;
-	this.easing = options.easing;
-
-	this.start = performance.now();
-	this.end = this.start + this.duration;
-
-	this.running = true;
-
-	tickers.push( this );
-	if ( !running ) { requestAnimationFrame( tick ); }
-};
-var Ticker__proto__ = Ticker.prototype;
-
-Ticker__proto__.tick = function tick ( now ) {
-	if ( !this.running ) { return false; }
-
-	if ( now > this.end ) {
-		if ( this.step ) { this.step( 1 ); }
-		if ( this.complete ) { this.complete( 1 ); }
-
-		return false;
-	}
-
-	var elapsed = now - this.start;
-	var eased = this.easing( elapsed / this.duration );
-
-	if ( this.step ) { this.step( eased ); }
-
-	return true;
-};
-
-Ticker__proto__.stop = function stop () {
-	if ( this.abort ) { this.abort(); }
-	this.running = false;
-};
-
-var prefixers = {};
-
-// TODO this is legacy. sooner we can replace the old adaptor API the better
-/* istanbul ignore next */
-function prefixKeypath ( obj, prefix ) {
-	var prefixed = {};
-
-	if ( !prefix ) {
-		return obj;
-	}
-
-	prefix += '.';
-
-	for ( var key in obj ) {
-		if ( hasOwn( obj, key ) ) {
-			prefixed[ prefix + key ] = obj[ key ];
-		}
-	}
-
-	return prefixed;
-}
-
-function getPrefixer ( rootKeypath ) {
-	var rootDot;
-
-	if ( !prefixers[ rootKeypath ] ) {
-		rootDot = rootKeypath ? rootKeypath + '.' : '';
-
-		/* istanbul ignore next */
-		prefixers[ rootKeypath ] = function ( relativeKeypath, value ) {
-			var obj;
-
-			if ( isString( relativeKeypath ) ) {
-				obj = {};
-				obj[ rootDot + relativeKeypath ] = value;
-				return obj;
-			}
-
-			if ( isObjectType( relativeKeypath ) ) {
-				// 'relativeKeypath' is in fact a hash, not a keypath
-				return rootDot ? prefixKeypath( relativeKeypath, rootKeypath ) : relativeKeypath;
-			}
-		};
-	}
-
-	return prefixers[ rootKeypath ];
-}
-
-var Model = (function (ModelBase) {
-	function Model ( parent, key ) {
-		ModelBase.call( this, parent );
-
-		this.ticker = null;
-
-		if ( parent ) {
-			this.key = unescapeKey( key );
-			this.isReadonly = parent.isReadonly;
-
-			if ( parent.value ) {
-				this.value = parent.value[ this.key ];
-				if ( isArray( this.value ) ) { this.length = this.value.length; }
-				this.adapt();
-			}
-		}
-	}
-
-	if ( ModelBase ) Model.__proto__ = ModelBase;
-	var Model__proto__ = Model.prototype = Object.create( ModelBase && ModelBase.prototype );
-	Model__proto__.constructor = Model;
-
-	Model__proto__.adapt = function adapt () {
-		var this$1 = this;
-
-		var adaptors = this.root.adaptors;
-		var len = adaptors.length;
-
-		this.rewrap = false;
-
-		// Exit early if no adaptors
-		if ( len === 0 ) { return; }
-
-		var value = this.wrapper ? ( 'newWrapperValue' in this ? this.newWrapperValue : this.wrapperValue ) : this.value;
-
-		// TODO remove this legacy nonsense
-		var ractive = this.root.ractive;
-		var keypath = this.getKeypath();
-
-		// tear previous adaptor down if present
-		if ( this.wrapper ) {
-			var shouldTeardown = this.wrapperValue === value ? false : !this.wrapper.reset || this.wrapper.reset( value ) === false;
-
-			if ( shouldTeardown ) {
-				this.wrapper.teardown();
-				delete this.wrapper;
-				delete this.wrapperValue;
-
-				// don't branch for undefined values
-				if ( this.value !== undefined ) {
-					var parentValue = this.parent.value || this.parent.createBranch( this.key );
-					if ( parentValue[ this.key ] !== value ) { parentValue[ this.key ] = value; }
-					this.value = value;
-				}
-			} else {
-				delete this.newWrapperValue;
-				this.value = this.wrapper.get();
-				return;
-			}
-		}
-
-		var i;
-
-		for ( i = 0; i < len; i += 1 ) {
-			var adaptor = adaptors[i];
-			if ( adaptor.filter( value, keypath, ractive ) ) {
-				this$1.wrapper = adaptor.wrap( ractive, value, keypath, getPrefixer( keypath ) );
-				this$1.wrapperValue = value;
-				this$1.wrapper.__model = this$1; // massive temporary hack to enable array adaptor
-
-				this$1.value = this$1.wrapper.get();
-
-				break;
-			}
-		}
-	};
-
-	Model__proto__.animate = function animate ( from, to, options, interpolator ) {
-		var this$1 = this;
-
-		if ( this.ticker ) { this.ticker.stop(); }
-
-		var fulfilPromise;
-		var promise = new Promise( function (fulfil) { return fulfilPromise = fulfil; } );
-
-		this.ticker = new Ticker({
-			duration: options.duration,
-			easing: options.easing,
-			step: function (t) {
-				var value = interpolator( t );
-				this$1.applyValue( value );
-				if ( options.step ) { options.step( t, value ); }
-			},
-			complete: function () {
-				this$1.applyValue( to );
-				if ( options.complete ) { options.complete( to ); }
-
-				this$1.ticker = null;
-				fulfilPromise( to );
-			}
-		});
-
-		promise.stop = this.ticker.stop;
-		return promise;
-	};
-
-	Model__proto__.applyValue = function applyValue ( value, notify ) {
-		if ( notify === void 0 ) notify = true;
-
-		if ( isEqual( value, this.value ) ) { return; }
-		if ( this.boundValue ) { this.boundValue = null; }
-
-		if ( this.parent.wrapper && this.parent.wrapper.set ) {
-			this.parent.wrapper.set( this.key, value );
-			this.parent.value = this.parent.wrapper.get();
-
-			this.value = this.parent.value[ this.key ];
-			if ( this.wrapper ) { this.newWrapperValue = this.value; }
-			this.adapt();
-		} else if ( this.wrapper ) {
-			this.newWrapperValue = value;
-			this.adapt();
-		} else {
-			var parentValue = this.parent.value || this.parent.createBranch( this.key );
-			if ( isObjectLike( parentValue ) ) {
-				parentValue[ this.key ] = value;
-			} else {
-				warnIfDebug( ("Attempted to set a property of a non-object '" + (this.getKeypath()) + "'") );
-				return;
-			}
-
-			this.value = value;
-			this.adapt();
-		}
-
-		// keep track of array stuff
-		if ( isArray( value ) ) {
-			this.length = value.length;
-			this.isArray = true;
-		} else {
-			this.isArray = false;
-		}
-
-		// notify dependants
-		this.links.forEach( handleChange );
-		this.children.forEach( mark );
-		this.deps.forEach( handleChange );
-
-		if ( notify ) { this.notifyUpstream(); }
-
-		if ( this.parent.isArray ) {
-			if ( this.key === 'length' ) { this.parent.length = value; }
-			else { this.parent.joinKey( 'length' ).mark(); }
-		}
-	};
-
-	Model__proto__.createBranch = function createBranch ( key ) {
-		var branch = isNumeric( key ) ? [] : {};
-		this.applyValue( branch, false );
-
-		return branch;
-	};
-
-	Model__proto__.get = function get ( shouldCapture, opts ) {
-		if ( this._link ) { return this._link.get( shouldCapture, opts ); }
-		if ( shouldCapture ) { capture( this ); }
-		// if capturing, this value needs to be unwrapped because it's for external use
-		if ( opts && opts.virtual ) { return this.getVirtual( false ); }
-		return maybeBind( this, ( ( opts && 'unwrap' in opts ) ? opts.unwrap !== false : shouldCapture ) && this.wrapper ? this.wrapperValue : this.value, !opts || opts.shouldBind !== false );
-	};
-
-	Model__proto__.getKeypathModel = function getKeypathModel () {
-		if ( !this.keypathModel ) { this.keypathModel = new KeypathModel( this ); }
-		return this.keypathModel;
-	};
-
-	Model__proto__.joinKey = function joinKey ( key, opts ) {
-		if ( this._link ) {
-			if ( opts && opts.lastLink !== false && ( key === undefined || key === '' ) ) { return this; }
-			return this._link.joinKey( key );
-		}
-
-		if ( key === undefined || key === '' ) { return this; }
-
-
-		if ( !hasOwn( this.childByKey, key ) ) {
-			var child = new Model( this, key );
-			this.children.push( child );
-			this.childByKey[ key ] = child;
-		}
-
-		if ( this.childByKey[ key ]._link && ( !opts || opts.lastLink !== false ) ) { return this.childByKey[ key ]._link; }
-		return this.childByKey[ key ];
-	};
-
-	Model__proto__.mark = function mark$1 ( force ) {
-		if ( this._link ) { return this._link.mark( force ); }
-
-		var old = this.value;
-		var value = this.retrieve();
-
-		if ( force || !isEqual( value, old ) ) {
-			this.value = value;
-			if ( this.boundValue ) { this.boundValue = null; }
-
-			// make sure the wrapper stays in sync
-			if ( old !== value || this.rewrap ) {
-				if ( this.wrapper ) { this.newWrapperValue = value; }
-				this.adapt();
-			}
-
-			// keep track of array stuff
-			if ( isArray( value ) ) {
-				this.length = value.length;
-				this.isArray = true;
-			} else {
-				this.isArray = false;
-			}
-
-			this.children.forEach( force ? markForce : mark );
-			this.links.forEach( marked );
-
-			this.deps.forEach( handleChange );
-		}
-	};
-
-	Model__proto__.merge = function merge ( array, comparator ) {
-		var oldArray = this.value;
-		var newArray = array;
-		if ( oldArray === newArray ) { oldArray = recreateArray( this ); }
-		if ( comparator ) {
-			oldArray = oldArray.map( comparator );
-			newArray = newArray.map( comparator );
-		}
-
-		var oldLength = oldArray.length;
-
-		var usedIndices = {};
-		var firstUnusedIndex = 0;
-
-		var newIndices = oldArray.map( function (item) {
-			var index;
-			var start = firstUnusedIndex;
-
-			do {
-				index = newArray.indexOf( item, start );
-
-				if ( index === -1 ) {
-					return -1;
-				}
-
-				start = index + 1;
-			} while ( ( usedIndices[ index ] === true ) && start < oldLength );
-
-			// keep track of the first unused index, so we don't search
-			// the whole of newArray for each item in oldArray unnecessarily
-			if ( index === firstUnusedIndex ) {
-				firstUnusedIndex += 1;
-			}
-			// allow next instance of next "equal" to be found item
-			usedIndices[ index ] = true;
-			return index;
-		});
-
-		this.parent.value[ this.key ] = array;
-		this.shuffle( newIndices, true );
-	};
-
-	Model__proto__.retrieve = function retrieve () {
-		return this.parent.value ? this.parent.value[ this.key ] : undefined;
-	};
-
-	Model__proto__.set = function set ( value ) {
-		if ( this.ticker ) { this.ticker.stop(); }
-		this.applyValue( value );
-	};
-
-	Model__proto__.shuffle = function shuffle$2 ( newIndices, unsafe ) {
-		shuffle( this, newIndices, false, unsafe );
-	};
-
-	Model__proto__.source = function source () { return this; };
-
-	Model__proto__.teardown = function teardown$3 () {
-		if ( this._link ) {
-			this._link.teardown();
-			this._link = null;
-		}
-		this.children.forEach( teardown );
-		if ( this.wrapper ) { this.wrapper.teardown(); }
-		if ( this.keypathModel ) { this.keypathModel.teardown(); }
-	};
-
-	return Model;
-}(ModelBase));
-
-function recreateArray( model ) {
-	var array = [];
-
-	for ( var i = 0; i < model.length; i++ ) {
-		array[ i ] = (model.childByKey[i] || {}).value;
-	}
-
-	return array;
-}
-
-/* global global */
-var data = {};
-
-var SharedModel = (function (Model) {
-	function SharedModel ( value, name ) {
-		Model.call( this, null, ("@" + name) );
-		this.key = "@" + name;
-		this.value = value;
-		this.isRoot = true;
-		this.root = this;
-		this.adaptors = [];
-	}
-
-	if ( Model ) SharedModel.__proto__ = Model;
-	var SharedModel__proto__ = SharedModel.prototype = Object.create( Model && Model.prototype );
-	SharedModel__proto__.constructor = SharedModel;
-
-	SharedModel__proto__.getKeypath = function getKeypath () {
-		return this.key;
-	};
-
-	SharedModel__proto__.retrieve = function retrieve () { return this.value; };
-
-	return SharedModel;
-}(Model));
-
-var SharedModel$1 = new SharedModel( data, 'shared' );
-
-var GlobalModel = new SharedModel( typeof global !== 'undefined' ? global : window, 'global' );
-
-function resolveReference ( fragment, ref ) {
-	var initialFragment = fragment;
-	// current context ref
-	if ( ref === '.' ) { return fragment.findContext(); }
-
-	// ancestor references
-	if ( ref[0] === '~' ) { return fragment.ractive.viewmodel.joinAll( splitKeypath( ref.slice( 2 ) ) ); }
-
-	// scoped references
-	if ( ref[0] === '.' || ref[0] === '^' ) {
-		var frag = fragment;
-		var parts = ref.split( '/' );
-		var explicitContext = parts[0] === '^^';
-		var context$1 = explicitContext ? null : fragment.findContext();
-
-		// account for the first context hop
-		if ( explicitContext ) { parts.unshift( '^^' ); }
-
-		// walk up the context chain
-		while ( parts[0] === '^^' ) {
-			parts.shift();
-			context$1 = null;
-			while ( frag && !context$1 ) {
-				context$1 = frag.context;
-				frag = frag.parent.component ? frag.parent.component.up : frag.parent;
-			}
-		}
-
-		if ( !context$1 && explicitContext ) {
-			throw new Error( ("Invalid context parent reference ('" + ref + "'). There is not context at that level.") );
-		}
-
-		// walk up the context path
-		while ( parts[0] === '.' || parts[0] === '..' ) {
-			var part = parts.shift();
-
-			if ( part === '..' ) {
-				context$1 = context$1.parent;
-			}
-		}
-
-		ref = parts.join( '/' );
-
-		// special case - `{{.foo}}` means the same as `{{./foo}}`
-		if ( ref[0] === '.' ) { ref = ref.slice( 1 ); }
-		return context$1.joinAll( splitKeypath( ref ) );
-	}
-
-	var keys$$1 = splitKeypath( ref );
-	if ( !keys$$1.length ) { return; }
-	var base = keys$$1.shift();
-
-	// special refs
-	if ( base[0] === '@' ) {
-		// shorthand from outside the template
-		// @this referring to local ractive instance
-		if ( base === '@this' || base === '@' ) {
-			return fragment.ractive.viewmodel.getRactiveModel().joinAll( keys$$1 );
-		}
-
-		// @index or @key referring to the nearest repeating index or key
-		else if ( base === '@index' || base === '@key' ) {
-			if ( keys$$1.length ) { badReference( base ); }
-			var repeater = fragment.findRepeatingFragment();
-			// make sure the found fragment is actually an iteration
-			if ( !repeater.isIteration ) { return; }
-			return repeater.context && repeater.context.getKeyModel( repeater[ ref[1] === 'i' ? 'index' : 'key' ] );
-		}
-
-		// @global referring to window or global
-		else if ( base === '@global' ) {
-			return GlobalModel.joinAll( keys$$1 );
-		}
-
-		// @global referring to window or global
-		else if ( base === '@shared' ) {
-			return SharedModel$1.joinAll( keys$$1 );
-		}
-
-		// @keypath or @rootpath, the current keypath string
-		else if ( base === '@keypath' || base === '@rootpath' ) {
-			var root = ref[1] === 'r' ? fragment.ractive.root : null;
-			var context$2 = fragment.findContext();
-
-			// skip over component roots, which provide no context
-			while ( root && context$2.isRoot && context$2.ractive.component ) {
-				context$2 = context$2.ractive.component.up.findContext();
-			}
-
-			return context$2.getKeypathModel( root );
-		}
-
-		else if ( base === '@context' ) {
-			return new ContextModel( fragment.getContext() );
-		}
-
-		// @context-local data
-		else if ( base === '@local' ) {
-			return fragment.getContext()._data.joinAll( keys$$1 );
-		}
-
-		// @style shared model
-		else if ( base === '@style' ) {
-			return fragment.ractive.constructor._cssModel.joinAll( keys$$1 );
-		}
-
-		// nope
-		else {
-			throw new Error( ("Invalid special reference '" + base + "'") );
-		}
-	}
-
-	var context = fragment.findContext();
-
-	// check immediate context for a match
-	if ( context.has( base ) ) {
-		return context.joinKey( base ).joinAll( keys$$1 );
-	}
-
-	// walk up the fragment hierarchy looking for a matching ref, alias, or key in a context
-	var createMapping = false;
-	var shouldWarn = fragment.ractive.warnAboutAmbiguity;
-
-	while ( fragment ) {
-		// repeated fragments
-		if ( fragment.isIteration ) {
-			if ( base === fragment.parent.keyRef ) {
-				if ( keys$$1.length ) { badReference( base ); }
-				return fragment.context.getKeyModel( fragment.key );
-			}
-
-			if ( base === fragment.parent.indexRef ) {
-				if ( keys$$1.length ) { badReference( base ); }
-				return fragment.context.getKeyModel( fragment.index );
-			}
-		}
-
-		// alias node or iteration
-		if ( fragment.aliases && hasOwn( fragment.aliases, base ) ) {
-			var model = fragment.aliases[ base ];
-
-			if ( keys$$1.length === 0 ) { return model; }
-			else if ( isFunction( model.joinAll ) ) {
-				return model.joinAll( keys$$1 );
-			}
-		}
-
-		// check fragment context to see if it has the key we need
-		if ( fragment.context && fragment.context.has( base ) ) {
-			// this is an implicit mapping
-			if ( createMapping ) {
-				if ( shouldWarn ) { warnIfDebug( ("'" + ref + "' resolved but is ambiguous and will create a mapping to a parent component.") ); }
-				return context.root.createLink( base, fragment.context.joinKey( base ), base, { implicit: true }).joinAll( keys$$1 );
-			}
-
-			if ( shouldWarn ) { warnIfDebug( ("'" + ref + "' resolved but is ambiguous.") ); }
-			return fragment.context.joinKey( base ).joinAll( keys$$1 );
-		}
-
-		if ( ( fragment.componentParent || ( !fragment.parent && fragment.ractive.component ) ) && !fragment.ractive.isolated ) {
-			// ascend through component boundary
-			fragment = fragment.componentParent || fragment.ractive.component.up;
-			createMapping = true;
-		} else {
-			fragment = fragment.parent;
-		}
-	}
-
-	// if enabled, check the instance for a match
-	var instance = initialFragment.ractive;
-	if ( instance.resolveInstanceMembers && base !== 'data' && base in instance ) {
-		return instance.viewmodel.getRactiveModel().joinKey( base ).joinAll( keys$$1 );
-	}
-
-	if ( shouldWarn ) {
-		warnIfDebug( ("'" + ref + "' is ambiguous and did not resolve.") );
-	}
-
-	// didn't find anything, so go ahead and create the key on the local model
-	return context.joinKey( base ).joinAll( keys$$1 );
-}
-
-function badReference ( key ) {
-	throw new Error( ("An index or key reference (" + key + ") cannot have child properties") );
-}
-
-var ContextModel = function ContextModel ( context ) {
-	this.context = context;
-};
-
-ContextModel.prototype.get = function get () { return this.context; };
-
-var extern = {};
-
-function getRactiveContext ( ractive ) {
-	var assigns = [], len = arguments.length - 1;
-	while ( len-- > 0 ) assigns[ len ] = arguments[ len + 1 ];
-
-	var fragment = ractive.fragment || ractive._fakeFragment || ( ractive._fakeFragment = new FakeFragment( ractive ) );
-	return fragment.getContext.apply( fragment, assigns );
-}
-
-function getContext () {
-	var assigns = [], len = arguments.length;
-	while ( len-- ) assigns[ len ] = arguments[ len ];
-
-	if ( !this.ctx ) { this.ctx = new extern.Context( this ); }
-	assigns.unshift( create( this.ctx ) );
-	return assign.apply( null, assigns );
-}
-
-var FakeFragment = function FakeFragment ( ractive ) {
-	this.ractive = ractive;
-};
-
-FakeFragment.prototype.findContext = function findContext () { return this.ractive.viewmodel; };
-var proto$1 = FakeFragment.prototype;
-proto$1.getContext = getContext;
-proto$1.find = proto$1.findComponent = proto$1.findAll = proto$1.findAllComponents = noop;
-
-function findParentWithContext ( fragment ) {
-	var frag = fragment;
-	while ( frag && !frag.context ) { frag = frag.parent; }
-	if ( !frag ) { return fragment && fragment.ractive.fragment; }
-	else { return frag; }
-}
-
-var keep = false;
-
-function set ( pairs, options ) {
-	var k = keep;
-
-	var deep = options && options.deep;
-	var shuffle = options && options.shuffle;
-	var promise = runloop.start();
-	if ( options && 'keep' in options ) { keep = options.keep; }
-
-	var i = pairs.length;
-	while ( i-- ) {
-		var model = pairs[i][0];
-		var value = pairs[i][1];
-		var keypath = pairs[i][2];
-
-		if ( !model ) {
-			runloop.end();
-			throw new Error( ("Failed to set invalid keypath '" + keypath + "'") );
-		}
-
-		if ( deep ) { deepSet( model, value ); }
-		else if ( shuffle ) {
-			var array = value;
-			var target = model.get();
-			// shuffle target array with itself
-			if ( !array ) { array = target; }
-
-			// if there's not an array there yet, go ahead and set
-			if ( target === undefined ) {
-				model.set( array );
-			} else {
-				if ( !isArray( target ) || !isArray( array ) ) {
-					runloop.end();
-					throw new Error( 'You cannot merge an array with a non-array' );
-				}
-
-				var comparator = getComparator( shuffle );
-				model.merge( array, comparator );
-			}
-		} else { model.set( value ); }
-	}
-
-	runloop.end();
-
-	keep = k;
-
-	return promise;
-}
-
-var star = /\*/;
-function gather ( ractive, keypath, base, isolated ) {
-	if ( !base && ( keypath[0] === '.' || keypath[1] === '^' ) ) {
-		warnIfDebug( "Attempted to set a relative keypath from a non-relative context. You can use a context object to set relative keypaths." );
-		return [];
-	}
-
-	var keys$$1 = splitKeypath( keypath );
-	var model = base || ractive.viewmodel;
-
-	if ( star.test( keypath ) ) {
-		return model.findMatches( keys$$1 );
-	} else {
-		if ( model === ractive.viewmodel ) {
-			// allow implicit mappings
-			if ( ractive.component && !ractive.isolated && !model.has( keys$$1[0] ) && keypath[0] !== '@' && keypath[0] && !isolated ) {
-				return [ resolveReference( ractive.fragment || new FakeFragment( ractive ), keypath ) ];
-			} else {
-				return [ model.joinAll( keys$$1 ) ];
-			}
-		} else {
-			return [ model.joinAll( keys$$1 ) ];
-		}
-	}
-}
-
-function build ( ractive, keypath, value, isolated ) {
-	var sets = [];
-
-	// set multiple keypaths in one go
-	if ( isObject( keypath ) ) {
-		var loop = function ( k ) {
-			if ( hasOwn( keypath, k ) ) {
-				sets.push.apply( sets, gather( ractive, k, null, isolated ).map( function (m) { return [ m, keypath[k], k ]; } ) );
-			}
-		};
-
-		for ( var k in keypath ) loop( k );
-
-	}
-	// set a single keypath
-	else {
-		sets.push.apply( sets, gather( ractive, keypath, null, isolated ).map( function (m) { return [ m, value, keypath ]; } ) );
-	}
-
-	return sets;
-}
-
-var deepOpts = { virtual: false };
-function deepSet( model, value ) {
-	var dest = model.get( false, deepOpts );
-
-	// if dest doesn't exist, just set it
-	if ( dest == null || !isObjectType( value ) ) { return model.set( value ); }
-	if ( !isObjectType( dest ) ) { return model.set( value ); }
-
-	for ( var k in value ) {
-		if ( hasOwn( value, k ) ) {
-			deepSet( model.joinKey( k ), value[k] );
-		}
-	}
-}
-
-var comparators = {};
-function getComparator ( option ) {
-	if ( option === true ) { return null; } // use existing arrays
-	if ( isFunction( option ) ) { return option; }
-
-	if ( isString( option ) ) {
-		return comparators[ option ] || ( comparators[ option ] = function (thing) { return thing[ option ]; } );
-	}
-
-	throw new Error( 'If supplied, options.compare must be a string, function, or true' ); // TODO link to docs
-}
-
-var errorMessage = 'Cannot add to a non-numeric value';
-
-function add ( ractive, keypath, d, options ) {
-	if ( !isString( keypath ) || !isNumeric( d ) ) {
-		throw new Error( 'Bad arguments' );
-	}
-
-	var sets = build( ractive, keypath, d, options && options.isolated );
-
-	return set( sets.map( function (pair) {
-		var model = pair[0];
-		var add = pair[1];
-		var value = model.get();
-		if ( !isNumeric( add ) || !isNumeric( value ) ) { throw new Error( errorMessage ); }
-		return [ model, value + add ];
-	}));
-}
-
-function Ractive$add ( keypath, d, options ) {
-	var num = isNumber( d ) ? d : 1;
-	var opts = isObjectType( d ) ? d : options;
-	return add( this, keypath, num, opts );
-}
-
-function immediate ( value ) {
-	var result = Promise.resolve( value );
-	defineProperty( result, 'stop', { value: noop });
-	return result;
-}
-
-var linear = easing.linear;
-
-function getOptions ( options, instance ) {
-	options = options || {};
-
-	var easing$$1;
-	if ( options.easing ) {
-		easing$$1 = isFunction( options.easing ) ?
-			options.easing :
-			instance.easing[ options.easing ];
-	}
-
-	return {
-		easing: easing$$1 || linear,
-		duration: 'duration' in options ? options.duration : 400,
-		complete: options.complete || noop,
-		step: options.step || noop,
-		interpolator: options.interpolator
-	};
-}
-
-function animate ( ractive, model, to, options ) {
-	options = getOptions( options, ractive );
-	var from = model.get();
-
-	// don't bother animating values that stay the same
-	if ( isEqual( from, to ) ) {
-		options.complete( options.to );
-		return immediate( to );
-	}
-
-	var interpolator = interpolate( from, to, ractive, options.interpolator );
-
-	// if we can't interpolate the value, set it immediately
-	if ( !interpolator ) {
-		runloop.start();
-		model.set( to );
-		runloop.end();
-
-		return immediate( to );
-	}
-
-	return model.animate( from, to, options, interpolator );
-}
-
-function Ractive$animate ( keypath, to, options ) {
-	if ( isObjectType( keypath ) ) {
-		var keys$$1 = keys( keypath );
-
-		throw new Error( ("ractive.animate(...) no longer supports objects. Instead of ractive.animate({\n  " + (keys$$1.map( function (key) { return ("'" + key + "': " + (keypath[ key ])); } ).join( '\n  ' )) + "\n}, {...}), do\n\n" + (keys$$1.map( function (key) { return ("ractive.animate('" + key + "', " + (keypath[ key ]) + ", {...});"); } ).join( '\n' )) + "\n") );
-	}
-
-
-	return animate( this, this.viewmodel.joinAll( splitKeypath( keypath ) ), to, options );
-}
-
-function enqueue ( ractive, event ) {
-	if ( ractive.event ) {
-		ractive._eventQueue.push( ractive.event );
-	}
-
-	ractive.event = event;
-}
-
-function dequeue ( ractive ) {
-	if ( ractive._eventQueue.length ) {
-		ractive.event = ractive._eventQueue.pop();
-	} else {
-		ractive.event = null;
-	}
-}
-
-var initStars = {};
-var bubbleStars = {};
-
-// cartesian product of name parts and stars
-// adjusted appropriately for special cases
-function variants ( name, initial ) {
-	var map = initial ? initStars : bubbleStars;
-	if ( map[ name ] ) { return map[ name ]; }
-
-	var parts = name.split( '.' );
-	var result = [];
-	var base = false;
-
-	// initial events the implicit namespace of 'this'
-	if ( initial ) {
-		parts.unshift( 'this' );
-		base = true;
-	}
-
-	// use max - 1 bits as a bitmap to pick a part or a *
-	// need to skip the full star case if the namespace is synthetic
-	var max = Math.pow( 2, parts.length ) - ( initial ? 1 : 0 );
-	for ( var i = 0; i < max; i++ ) {
-		var join = [];
-		for ( var j = 0; j < parts.length; j++ ) {
-			join.push( 1 & ( i >> j ) ? '*' : parts[j] );
-		}
-		result.unshift( join.join( '.' ) );
-	}
-
-	if ( base ) {
-		// include non-this-namespaced versions
-		if ( parts.length > 2 ) {
-			result.push.apply( result, variants( name, false ) );
-		} else {
-			result.push( '*' );
-			result.push( name );
-		}
-	}
-
-	map[ name ] = result;
-	return result;
-}
-
-function fireEvent ( ractive, eventName, context, args ) {
-	if ( args === void 0 ) args = [];
-
-	if ( !eventName ) { return; }
-
-	context.name = eventName;
-	args.unshift( context );
-
-	var eventNames = ractive._nsSubs ? variants( eventName, true ) : [ '*', eventName ];
-
-	return fireEventAs( ractive, eventNames, context, args, true );
-}
-
-function fireEventAs  ( ractive, eventNames, context, args, initialFire ) {
-	if ( initialFire === void 0 ) initialFire = false;
-
-	var bubble = true;
-
-	if ( initialFire || ractive._nsSubs ) {
-		enqueue( ractive, context );
-
-		var i = eventNames.length;
-		while ( i-- ) {
-			if ( eventNames[ i ] in ractive._subs ) {
-				bubble = notifySubscribers( ractive, ractive._subs[ eventNames[ i ] ], context, args ) && bubble;
-			}
-		}
-
-		dequeue( ractive );
-	}
-
-	if ( ractive.parent && bubble ) {
-		if ( initialFire && ractive.component ) {
-			var fullName = ractive.component.name + '.' + eventNames[ eventNames.length - 1 ];
-			eventNames = variants( fullName, false );
-
-			if ( context && !context.component ) {
-				context.component = ractive;
-			}
-		}
-
-		bubble = fireEventAs( ractive.parent, eventNames, context, args );
-	}
-
-	return bubble;
-}
-
-function notifySubscribers ( ractive, subscribers, context, args ) {
-	var originalEvent = null;
-	var stopEvent = false;
-
-	// subscribers can be modified inflight, e.g. "once" functionality
-	// so we need to copy to make sure everyone gets called
-	subscribers = subscribers.slice();
-
-	for ( var i = 0, len = subscribers.length; i < len; i += 1 ) {
-		if ( !subscribers[ i ].off && subscribers[ i ].handler.apply( ractive, args ) === false ) {
-			stopEvent = true;
-		}
-	}
-
-	if ( context && stopEvent && ( originalEvent = context.event ) ) {
-		originalEvent.preventDefault && originalEvent.preventDefault();
-		originalEvent.stopPropagation && originalEvent.stopPropagation();
-	}
-
-	return !stopEvent;
-}
-
-var Hook = function Hook ( event ) {
-	this.event = event;
-	this.method = 'on' + event;
-};
-
-Hook.prototype.fire = function fire ( ractive, arg ) {
-	var context = getRactiveContext( ractive );
-
-	if ( ractive[ this.method ] ) {
-		arg ? ractive[ this.method ]( context, arg ) : ractive[ this.method ]( context );
-	}
-
-	fireEvent( ractive, this.event, context, arg ? [ arg, ractive ] : [ ractive ] );
-};
-
-function findAnchors ( fragment, name ) {
-	if ( name === void 0 ) name = null;
-
-	var res = [];
-
-	findAnchorsIn( fragment, name, res );
-
-	return res;
-}
-
-function findAnchorsIn ( item, name, result ) {
-	if ( item.isAnchor ) {
-		if ( !name || item.name === name ) {
-			result.push( item );
-		}
-	} else if ( item.items ) {
-		item.items.forEach( function (i) { return findAnchorsIn( i, name, result ); } );
-	} else if ( item.iterations ) {
-		item.iterations.forEach( function (i) { return findAnchorsIn( i, name, result ); } );
-	} else if ( item.fragment && !item.component ) {
-		findAnchorsIn( item.fragment, name, result );
-	}
-}
-
-function updateAnchors ( instance, name ) {
-	if ( name === void 0 ) name = null;
-
-	var anchors = findAnchors( instance.fragment, name );
-	var idxs = {};
-	var children = instance._children.byName;
-
-	anchors.forEach( function (a) {
-		var name = a.name;
-		if ( !( name in idxs ) ) { idxs[name] = 0; }
-		var idx = idxs[name];
-		var child = ( children[name] || [] )[idx];
-
-		if ( child && child.lastBound !== a ) {
-			if ( child.lastBound ) { child.lastBound.removeChild( child ); }
-			a.addChild( child );
-		}
-
-		idxs[name]++;
-	});
-}
-
-function unrenderChild ( meta ) {
-	if ( meta.instance.fragment.rendered ) {
-		meta.shouldDestroy = true;
-		meta.instance.unrender();
-	}
-	meta.instance.el = null;
-}
-
-var attachHook = new Hook( 'attachchild' );
-
-function attachChild ( child, options ) {
-	if ( options === void 0 ) options = {};
-
-	var children = this._children;
-	var idx;
-
-	if ( child.parent && child.parent !== this ) { throw new Error( ("Instance " + (child._guid) + " is already attached to a different instance " + (child.parent._guid) + ". Please detach it from the other instance using detachChild first.") ); }
-	else if ( child.parent ) { throw new Error( ("Instance " + (child._guid) + " is already attached to this instance.") ); }
-
-	var meta = {
-		instance: child,
-		ractive: this,
-		name: options.name || child.constructor.name || 'Ractive',
-		target: options.target || false,
-		bubble: bubble,
-		findNextNode: findNextNode
-	};
-	meta.nameOption = options.name;
-
-	// child is managing itself
-	if ( !meta.target ) {
-		meta.up = this.fragment;
-		meta.external = true;
-	} else {
-		var list;
-		if ( !( list = children.byName[ meta.target ] ) ) {
-			list = [];
-			this.set( ("@this.children.byName." + (meta.target)), list );
-		}
-		idx = options.prepend ? 0 : options.insertAt !== undefined ? options.insertAt : list.length;
-	}
-
-	child.set({
-		'@this.parent': this,
-		'@this.root': this.root
-	});
-	child.component = meta;
-	children.push( meta );
-
-	attachHook.fire( child );
-
-	var promise = runloop.start();
-
-	if ( meta.target ) {
-		unrenderChild( meta );
-		this.splice( ("@this.children.byName." + (meta.target)), idx, 0, meta );
-		updateAnchors( this, meta.target );
-	} else {
-		if ( !child.isolated ) { child.viewmodel.attached( this.fragment ); }
-	}
-
-	runloop.end();
-
-	promise.ractive = child;
-	return promise.then( function () { return child; } );
-}
-
-function bubble () { runloop.addFragment( this.instance.fragment ); }
-
-function findNextNode () {
-	if ( this.anchor ) { return this.anchor.findNextNode(); }
-}
-
-var detachHook = new Hook( 'detach' );
-
-function Ractive$detach () {
-	if ( this.isDetached ) {
-		return this.el;
-	}
-
-	if ( this.el ) {
-		removeFromArray( this.el.__ractive_instances__, this );
-	}
-
-	this.el = this.fragment.detach();
-	this.isDetached = true;
-
-	detachHook.fire( this );
-	return this.el;
-}
-
-var detachHook$1 = new Hook( 'detachchild' );
-
-function detachChild ( child ) {
-	var children = this._children;
-	var meta, index;
-
-	var i = children.length;
-	while ( i-- ) {
-		if ( children[i].instance === child ) {
-			index = i;
-			meta = children[i];
-			break;
-		}
-	}
-
-	if ( !meta || child.parent !== this ) { throw new Error( ("Instance " + (child._guid) + " is not attached to this instance.") ); }
-
-	var promise = runloop.start();
-
-	if ( meta.anchor ) { meta.anchor.removeChild( meta ); }
-	if ( !child.isolated ) { child.viewmodel.detached(); }
-
-	runloop.end();
-
-	children.splice( index, 1 );
-	if ( meta.target ) {
-		this.splice( ("@this.children.byName." + (meta.target)), children.byName[ meta.target ].indexOf(meta), 1 );
-		updateAnchors( this, meta.target );
-	}
-	child.set({
-		'@this.parent': undefined,
-		'@this.root': child
-	});
-	child.component = null;
-
-	detachHook$1.fire( child );
-
-	promise.ractive = child;
-	return promise.then( function () { return child; } );
-}
-
-function Ractive$find ( selector, options ) {
-	var this$1 = this;
-	if ( options === void 0 ) options = {};
-
-	if ( !this.el ) { throw new Error( ("Cannot call ractive.find('" + selector + "') unless instance is rendered to the DOM") ); }
-
-	var node = this.fragment.find( selector, options );
-	if ( node ) { return node; }
-
-	if ( options.remote ) {
-		for ( var i = 0; i < this._children.length; i++ ) {
-			if ( !this$1._children[i].instance.fragment.rendered ) { continue; }
-			node = this$1._children[i].instance.find( selector, options );
-			if ( node ) { return node; }
-		}
-	}
-}
-
-function Ractive$findAll ( selector, options ) {
-	if ( options === void 0 ) options = {};
-
-	if ( !this.el ) { throw new Error( ("Cannot call ractive.findAll('" + selector + "', ...) unless instance is rendered to the DOM") ); }
-
-	if ( !isArray( options.result ) ) { options.result = []; }
-
-	this.fragment.findAll( selector, options );
-
-	if ( options.remote ) {
-		// seach non-fragment children
-		this._children.forEach( function (c) {
-			if ( !c.target && c.instance.fragment && c.instance.fragment.rendered ) {
-				c.instance.findAll( selector, options );
-			}
-		});
-	}
-
-	return options.result;
-}
-
-function Ractive$findAllComponents ( selector, options ) {
-	if ( !options && isObjectType( selector ) ) {
-		options = selector;
-		selector = '';
-	}
-
-	options = options || {};
-
-	if ( !isArray( options.result ) ) { options.result = []; }
-
-	this.fragment.findAllComponents( selector, options );
-
-	if ( options.remote ) {
-		// search non-fragment children
-		this._children.forEach( function (c) {
-			if ( !c.target && c.instance.fragment && c.instance.fragment.rendered ) {
-				if ( !selector || c.name === selector ) {
-					options.result.push( c.instance );
-				}
-
-				c.instance.findAllComponents( selector, options );
-			}
-		});
-	}
-
-	return options.result;
-}
-
-function Ractive$findComponent ( selector, options ) {
-	var this$1 = this;
-	if ( options === void 0 ) options = {};
-
-	if ( isObjectType( selector ) ) {
-		options = selector;
-		selector = '';
-	}
-
-	var child = this.fragment.findComponent( selector, options );
-	if ( child ) { return child; }
-
-	if ( options.remote ) {
-		if ( !selector && this._children.length ) { return this._children[0].instance; }
-		for ( var i = 0; i < this._children.length; i++ ) {
-			// skip children that are or should be in an anchor
-			if ( this$1._children[i].target ) { continue; }
-			if ( this$1._children[i].name === selector ) { return this$1._children[i].instance; }
-			child = this$1._children[i].instance.findComponent( selector, options );
-			if ( child ) { return child; }
-		}
-	}
-}
-
-function Ractive$findContainer ( selector ) {
-	if ( this.container ) {
-		if ( this.container.component && this.container.component.name === selector ) {
-			return this.container;
-		} else {
-			return this.container.findContainer( selector );
-		}
-	}
-
-	return null;
-}
-
-function Ractive$findParent ( selector ) {
-
-	if ( this.parent ) {
-		if ( this.parent.component && this.parent.component.name === selector ) {
-			return this.parent;
-		} else {
-			return this.parent.findParent ( selector );
-		}
-	}
-
-	return null;
-}
-
-var TEXT              = 1;
-var INTERPOLATOR      = 2;
-var TRIPLE            = 3;
-var SECTION           = 4;
-var INVERTED          = 5;
-var CLOSING           = 6;
-var ELEMENT           = 7;
-var PARTIAL           = 8;
-var COMMENT           = 9;
-var DELIMCHANGE       = 10;
-var ANCHOR            = 11;
-var ATTRIBUTE         = 13;
-var CLOSING_TAG       = 14;
-var COMPONENT         = 15;
-var YIELDER           = 16;
-var INLINE_PARTIAL    = 17;
-var DOCTYPE           = 18;
-var ALIAS             = 19;
-
-var NUMBER_LITERAL    = 20;
-var STRING_LITERAL    = 21;
-var ARRAY_LITERAL     = 22;
-var OBJECT_LITERAL    = 23;
-var BOOLEAN_LITERAL   = 24;
-var REGEXP_LITERAL    = 25;
-
-var GLOBAL            = 26;
-var KEY_VALUE_PAIR    = 27;
-
-
-var REFERENCE         = 30;
-var REFINEMENT        = 31;
-var MEMBER            = 32;
-var PREFIX_OPERATOR   = 33;
-var BRACKETED         = 34;
-var CONDITIONAL       = 35;
-var INFIX_OPERATOR    = 36;
-
-var INVOCATION        = 40;
-
-var SECTION_IF        = 50;
-var SECTION_UNLESS    = 51;
-var SECTION_EACH      = 52;
-var SECTION_WITH      = 53;
-var SECTION_IF_WITH   = 54;
-
-var ELSE              = 60;
-var ELSEIF            = 61;
-
-var EVENT             = 70;
-var DECORATOR         = 71;
-var TRANSITION        = 72;
-var BINDING_FLAG      = 73;
-var DELEGATE_FLAG     = 74;
-
-function findElement( start, orComponent, name ) {
-	if ( orComponent === void 0 ) orComponent = true;
-
-	while ( start && ( start.type !== ELEMENT || ( name && start.name !== name ) ) && ( !orComponent || ( start.type !== COMPONENT && start.type !== ANCHOR ) ) ) {
-		// start is a fragment - look at the owner
-		if ( start.owner ) { start = start.owner; }
-		// start is a component or yielder - look at the container
-		else if ( start.component ) { start = start.containerFragment || start.component.up; }
-		// start is an item - look at the parent
-		else if ( start.parent ) { start = start.parent; }
-		// start is an item without a parent - look at the parent fragment
-		else if ( start.up ) { start = start.up; }
-
-		else { start = undefined; }
-	}
-
-	return start;
-}
-
-// This function takes an array, the name of a mutator method, and the
-// arguments to call that mutator method with, and returns an array that
-// maps the old indices to their new indices.
-
-// So if you had something like this...
-//
-//     array = [ 'a', 'b', 'c', 'd' ];
-//     array.push( 'e' );
-//
-// ...you'd get `[ 0, 1, 2, 3 ]` - in other words, none of the old indices
-// have changed. If you then did this...
-//
-//     array.unshift( 'z' );
-//
-// ...the indices would be `[ 1, 2, 3, 4, 5 ]` - every item has been moved
-// one higher to make room for the 'z'. If you removed an item, the new index
-// would be -1...
-//
-//     array.splice( 2, 2 );
-//
-// ...this would result in [ 0, 1, -1, -1, 2, 3 ].
-//
-// This information is used to enable fast, non-destructive shuffling of list
-// sections when you do e.g. `ractive.splice( 'items', 2, 2 );
-
-function getNewIndices ( length, methodName, args ) {
-	var newIndices = [];
-
-	var spliceArguments = getSpliceEquivalent( length, methodName, args );
-
-	if ( !spliceArguments ) {
-		return null; // TODO support reverse and sort?
-	}
-
-	var balance = ( spliceArguments.length - 2 ) - spliceArguments[1];
-
-	var removeStart = Math.min( length, spliceArguments[0] );
-	var removeEnd = removeStart + spliceArguments[1];
-	newIndices.startIndex = removeStart;
-
-	var i;
-	for ( i = 0; i < removeStart; i += 1 ) {
-		newIndices.push( i );
-	}
-
-	for ( ; i < removeEnd; i += 1 ) {
-		newIndices.push( -1 );
-	}
-
-	for ( ; i < length; i += 1 ) {
-		newIndices.push( i + balance );
-	}
-
-	// there is a net shift for the rest of the array starting with index + balance
-	if ( balance !== 0 ) {
-		newIndices.touchedFrom = spliceArguments[0];
-	} else {
-		newIndices.touchedFrom = length;
-	}
-
-	return newIndices;
-}
-
-
-// The pop, push, shift an unshift methods can all be represented
-// as an equivalent splice
-function getSpliceEquivalent ( length, methodName, args ) {
-	switch ( methodName ) {
-		case 'splice':
-			if ( args[0] !== undefined && args[0] < 0 ) {
-				args[0] = length + Math.max( args[0], -length );
-			}
-
-			if ( args[0] === undefined ) { args[0] = 0; }
-
-			while ( args.length < 2 ) {
-				args.push( length - args[0] );
-			}
-
-			if ( !isNumber( args[1] ) ) {
-				args[1] = length - args[0];
-			}
-
-			// ensure we only remove elements that exist
-			args[1] = Math.min( args[1], length - args[0] );
-
-			return args;
-
-		case 'sort':
-		case 'reverse':
-			return null;
-
-		case 'pop':
-			if ( length ) {
-				return [ length - 1, 1 ];
-			}
-			return [ 0, 0 ];
-
-		case 'push':
-			return [ length, 0 ].concat( args );
-
-		case 'shift':
-			return [ 0, length ? 1 : 0 ];
-
-		case 'unshift':
-			return [ 0, 0 ].concat( args );
-	}
-}
-
-var arrayProto = Array.prototype;
-
-var makeArrayMethod = function ( methodName ) {
-	function path ( keypath ) {
-		var args = [], len = arguments.length - 1;
-		while ( len-- > 0 ) args[ len ] = arguments[ len + 1 ];
-
-		return model( this.viewmodel.joinAll( splitKeypath( keypath ) ), args );
-	}
-
-	function model ( mdl, args ) {
-		var array = mdl.get();
-
-		if ( !isArray( array ) ) {
-			if ( array === undefined ) {
-				array = [];
-				var result$1 = arrayProto[ methodName ].apply( array, args );
-				var promise$1 = runloop.start().then( function () { return result$1; } );
-				mdl.set( array );
-				runloop.end();
-				return promise$1;
-			} else {
-				throw new Error( ("shuffle array method " + methodName + " called on non-array at " + (mdl.getKeypath())) );
-			}
-		}
-
-		var newIndices = getNewIndices( array.length, methodName, args );
-		var result = arrayProto[ methodName ].apply( array, args );
-
-		var promise = runloop.start().then( function () { return result; } );
-		promise.result = result;
-
-		if ( newIndices ) {
-			if ( mdl.shuffle ) {
-				mdl.shuffle( newIndices );
-			} else { // it's a computation, which don't have a shuffle, so just invalidate
-				mdl.mark();
-			}
-		} else {
-			mdl.set( result );
-		}
-
-		runloop.end();
-
-		return promise;
-	}
-
-	return { path: path, model: model };
-};
-
-var updateHook = new Hook( 'update' );
-
-function update$1 ( ractive, model, options ) {
-	// if the parent is wrapped, the adaptor will need to be updated before
-	// updating on this keypath
-	if ( model.parent && model.parent.wrapper ) {
-		model.parent.adapt();
-	}
-
-	var promise = runloop.start();
-
-	model.mark( options && options.force );
-
-	// notify upstream of changes
-	model.notifyUpstream();
-
-	runloop.end();
-
-	updateHook.fire( ractive, model );
-
-	return promise;
-}
-
-function Ractive$update ( keypath, options ) {
-	var opts, path;
-
-	if ( isString( keypath ) ) {
-		path = splitKeypath( keypath );
-		opts = options;
-	} else {
-		opts = keypath;
-	}
-
-	return update$1( this, path ? this.viewmodel.joinAll( path ) : this.viewmodel, opts );
-}
-
-var modelPush = makeArrayMethod( 'push' ).model;
-var modelPop = makeArrayMethod( 'pop' ).model;
-var modelShift = makeArrayMethod( 'shift' ).model;
-var modelUnshift = makeArrayMethod( 'unshift' ).model;
-var modelSort = makeArrayMethod( 'sort' ).model;
-var modelSplice = makeArrayMethod( 'splice' ).model;
-var modelReverse = makeArrayMethod( 'reverse' ).model;
-
-var ContextData = (function (Model) {
-	function ContextData ( options ) {
-		Model.call( this, null, null );
-
-		this.isRoot = true;
-		this.root = this;
-		this.value = {};
-		this.ractive = options.ractive;
-		this.adaptors = [];
-		this.context = options.context;
-	}
-
-	if ( Model ) ContextData.__proto__ = Model;
-	var ContextData__proto__ = ContextData.prototype = Object.create( Model && Model.prototype );
-	ContextData__proto__.constructor = ContextData;
-
-	ContextData__proto__.getKeypath = function getKeypath () {
-		return '@context.data';
-	};
-
-	return ContextData;
-}(Model));
-
-var Context = function Context ( fragment, element ) {
-	this.fragment = fragment;
-	this.element = element || findElement( fragment );
-	this.node = this.element && this.element.node;
-	this.ractive = fragment.ractive;
-	this.root = this;
-};
-var Context__proto__ = Context.prototype;
-
-var prototypeAccessors = { decorators: {},_data: {} };
-
-prototypeAccessors.decorators.get = function () {
-	var items = {};
-	if ( !this.element ) { return items; }
-	this.element.decorators.forEach( function (d) { return items[ d.name ] = d.handle; } );
-	return items;
-};
-
-prototypeAccessors._data.get = function () {
-	return this.model || ( this.root.model = new ContextData({ ractive: this.ractive, context: this.root }) );
-};
-
-// the usual mutation suspects
-Context__proto__.add = function add ( keypath, d, options ) {
-	var num = isNumber( d ) ? +d : 1;
-	var opts = isObjectType( d ) ? d : options;
-	return set( build$1( this, keypath, num ).map( function (pair) {
-		var model = pair[0];
-			var val = pair[1];
-		var value = model.get();
-		if ( !isNumeric( val ) || !isNumeric( value ) ) { throw new Error( 'Cannot add non-numeric value' ); }
-		return [ model, value + val ];
-	}), opts );
-};
-
-Context__proto__.animate = function animate$1 ( keypath, value, options ) {
-	var model = findModel( this, keypath ).model;
-	return animate( this.ractive, model, value, options );
-};
-
-// get relative keypaths and values
-Context__proto__.get = function get ( keypath ) {
-	if ( !keypath ) { return this.fragment.findContext().get( true ); }
-
-	var ref = findModel( this, keypath );
-		var model = ref.model;
-
-	return model ? model.get( true ) : undefined;
-};
-
-Context__proto__.getParent = function getParent ( component ) {
-	var fragment = this.fragment;
-
-	if ( fragment.context ) { fragment = findParentWithContext( fragment.parent || ( component && fragment.componentParent ) ); }
-	else {
-		fragment = findParentWithContext( fragment.parent || ( component && fragment.componentParent ) );
-		if ( fragment ) { fragment = findParentWithContext( fragment.parent || ( component && fragment.componentParent ) ); }
-	}
-
-	if ( !fragment || fragment === this.fragment ) { return; }
-	else { return fragment.getContext(); }
-};
-
-Context__proto__.hasListener = function hasListener ( name, bubble ) {
-	var el = this.element || this.fragment.owner;
-
-	do {
-		if ( el.template.t === ELEMENT ) {
-			if ( findEvent( el, name ) ) { return true; }
-		}
-		el = el.up && el.up.owner;
-		if ( el && el.component ) { el = el.component; }
-	} while ( el && bubble );
-};
-
-Context__proto__.link = function link ( source, dest ) {
-	var there = findModel( this, source ).model;
-	var here = findModel( this, dest ).model;
-	var promise = runloop.start();
-	here.link( there, source );
-	runloop.end();
-	return promise;
-};
-
-Context__proto__.listen = function listen ( event, handler ) {
-	var el = this.element;
-	el.on( event, handler );
-	return {
-		cancel: function cancel () { el.off( event, handler ); }
-	};
-};
-
-Context__proto__.observe = function observe ( keypath, callback, options ) {
-		if ( options === void 0 ) options = {};
-
-	if ( isObject( keypath ) ) { options = callback || {}; }
-	options.fragment = this.fragment;
-	return this.ractive.observe( keypath, callback, options );
-};
-
-Context__proto__.observeOnce = function observeOnce ( keypath, callback, options ) {
-		if ( options === void 0 ) options = {};
-
-	if ( isObject( keypath ) ) { options = callback || {}; }
-	options.fragment = this.fragment;
-	return this.ractive.observeOnce( keypath, callback, options );
-};
-
-Context__proto__.pop = function pop ( keypath ) {
-	return modelPop( findModel( this, keypath ).model, [] );
-};
-
-Context__proto__.push = function push ( keypath ) {
-		var values = [], len = arguments.length - 1;
-		while ( len-- > 0 ) values[ len ] = arguments[ len + 1 ];
-
-	return modelPush( findModel( this, keypath ).model, values );
-};
-
-Context__proto__.raise = function raise ( name, event ) {
-		var args = [], len = arguments.length - 2;
-		while ( len-- > 0 ) args[ len ] = arguments[ len + 2 ];
-
-	var el = this.element;
-	var ev;
-
-	while ( el ) {
-		if ( el.component ) { el = el.component; }
-		ev = findEvent( el, name );
-		if ( ev ) {
-			return ev.fire(
-				ev.element.getContext(
-					event || {},
-					event && !( 'original' in event ) ? { original: {} } : {}
-				),
-				args
-			);
-		}
-
-		el = el.up && el.up.owner;
-	}
-};
-
-Context__proto__.readLink = function readLink ( keypath, options ) {
-	return this.ractive.readLink( this.resolve( keypath ), options );
-};
-
-Context__proto__.resolve = function resolve ( path, ractive ) {
-	var ref = findModel( this, path );
-		var model = ref.model;
-		var instance = ref.instance;
-	return model ? model.getKeypath( ractive || instance ) : path;
-};
-
-Context__proto__.reverse = function reverse ( keypath ) {
-	return modelReverse( findModel( this, keypath ).model, [] );
-};
-
-Context__proto__.set = function set$2 ( keypath, value, options ) {
-	return set( build$1( this, keypath, value ), options );
-};
-
-Context__proto__.shift = function shift ( keypath ) {
-	return modelShift( findModel( this, keypath ).model, [] );
-};
-
-Context__proto__.splice = function splice ( keypath, index, drop ) {
-		var add = [], len = arguments.length - 3;
-		while ( len-- > 0 ) add[ len ] = arguments[ len + 3 ];
-
-	add.unshift( index, drop );
-	return modelSplice( findModel( this, keypath ).model, add );
-};
-
-Context__proto__.sort = function sort ( keypath ) {
-	return modelSort( findModel( this, keypath ).model, [] );
-};
-
-Context__proto__.subtract = function subtract ( keypath, d, options ) {
-	var num = isNumber( d ) ? d : 1;
-	var opts = isObjectType( d ) ? d : options;
-	return set( build$1( this, keypath, num ).map( function (pair) {
-		var model = pair[0];
-			var val = pair[1];
-		var value = model.get();
-		if ( !isNumeric( val ) || !isNumeric( value ) ) { throw new Error( 'Cannot add non-numeric value' ); }
-		return [ model, value - val ];
-	}), opts );
-};
-
-Context__proto__.toggle = function toggle ( keypath, options ) {
-	var ref = findModel( this, keypath );
-		var model = ref.model;
-	return set( [ [ model, !model.get() ] ], options );
-};
-
-Context__proto__.unlink = function unlink ( dest ) {
-	var here = findModel( this, dest ).model;
-	var promise = runloop.start();
-	if ( here.owner && here.owner._link ) { here.owner.unlink(); }
-	runloop.end();
-	return promise;
-};
-
-Context__proto__.unlisten = function unlisten ( event, handler ) {
-	this.element.off( event, handler );
-};
-
-Context__proto__.unshift = function unshift ( keypath ) {
-		var add = [], len = arguments.length - 1;
-		while ( len-- > 0 ) add[ len ] = arguments[ len + 1 ];
-
-	return modelUnshift( findModel( this, keypath ).model, add );
-};
-
-Context__proto__.update = function update ( keypath, options ) {
-	return update$1( this.ractive, findModel( this, keypath ).model, options );
-};
-
-Context__proto__.updateModel = function updateModel ( keypath, cascade ) {
-	var ref = findModel( this, keypath );
-		var model = ref.model;
-	var promise = runloop.start();
-	model.updateFromBindings( cascade );
-	runloop.end();
-	return promise;
-};
-
-// two-way binding related helpers
-Context__proto__.isBound = function isBound () {
-	var ref = this.getBindingModel( this );
-		var model = ref.model;
-	return !!model;
-};
-
-Context__proto__.getBindingPath = function getBindingPath ( ractive ) {
-	var ref = this.getBindingModel( this );
-		var model = ref.model;
-		var instance = ref.instance;
-	if ( model ) { return model.getKeypath( ractive || instance ); }
-};
-
-Context__proto__.getBinding = function getBinding () {
-	var ref = this.getBindingModel( this );
-		var model = ref.model;
-	if ( model ) { return model.get( true ); }
-};
-
-Context__proto__.getBindingModel = function getBindingModel ( ctx ) {
-	var el = ctx.element;
-	return { model: el.binding && el.binding.model, instance: el.up.ractive };
-};
-
-Context__proto__.setBinding = function setBinding ( value ) {
-	var ref = this.getBindingModel( this );
-		var model = ref.model;
-	return set( [ [ model, value ] ] );
-};
-
-Object.defineProperties( Context__proto__, prototypeAccessors );
-
-Context.forRactive = getRactiveContext;
-// circular deps are fun
-extern.Context = Context;
-
-// TODO: at some point perhaps this could support relative * keypaths?
-function build$1 ( ctx, keypath, value ) {
-	var sets = [];
-
-	// set multiple keypaths in one go
-	if ( isObject( keypath ) ) {
-		for ( var k in keypath ) {
-			if ( hasOwn( keypath, k ) ) {
-				sets.push( [ findModel( ctx, k ).model, keypath[k] ] );
-			}
-		}
-
-	}
-	// set a single keypath
-	else {
-		sets.push( [ findModel( ctx, keypath ).model, value ] );
-	}
-
-	return sets;
-}
-
-function findModel ( ctx, path ) {
-	var frag = ctx.fragment;
-
-	if ( !isString( path ) ) {
-		return { model: frag.findContext(), instance: path };
-	}
-
-	return { model: resolveReference( frag, path ), instance: frag.ractive };
-}
-
-function findEvent( el, name ) {
-	return el.attributes && el.attributes.find( function (a) { return a.template.t === EVENT && ~a.template.n.indexOf( name ); } );
-}
-
-function Ractive$fire ( eventName ) {
-	var args = [], len = arguments.length - 1;
-	while ( len-- > 0 ) args[ len ] = arguments[ len + 1 ];
-
-	var ctx;
-
-	// watch for reproxy
-	if ( args[0] instanceof Context  ) {
-		var proto = args.shift();
-		ctx = create( proto );
-		assign( ctx, proto );
-	} else if ( isObjectType( args[0] ) && ( args[0] === null || args[0].constructor === Object ) ) {
-		ctx = Context.forRactive( this, args.shift() );
-	} else {
-		ctx = Context.forRactive( this );
-	}
-
-
-	return fireEvent( this, eventName, ctx, args );
-}
-
-function Ractive$get ( keypath, opts ) {
-	if ( !isString( keypath ) ) { return this.viewmodel.get( true, keypath ); }
-
-	var keys = splitKeypath( keypath );
-	var key = keys[0];
-
-	var model;
-
-	if ( !this.viewmodel.has( key ) ) {
-		// if this is an inline component, we may need to create
-		// an implicit mapping
-		if ( this.component && !this.isolated ) {
-			model = resolveReference( this.fragment || new FakeFragment( this ), key );
-		}
-	}
-
-	model = this.viewmodel.joinAll( keys );
-	return model.get( true, opts );
-}
-
-var query = doc && doc.querySelector;
-
-function getContext$2 ( node ) {
-	if ( isString( node ) && query ) {
-		node = query.call( document, node );
-	}
-
-	var instances;
-	if ( node ) {
-		if ( node._ractive ) {
-			return node._ractive.proxy.getContext();
-		} else if ( ( instances = node.__ractive_instances__ ) && instances.length === 1 ) {
-			return getRactiveContext( instances[0] );
-		}
-	}
-}
-
-function getNodeInfo$1 ( node ) {
-	warnOnceIfDebug( "getNodeInfo has been renamed to getContext, and the getNodeInfo alias will be removed in a future release." );
-	return getContext$2 ( node );
-}
-
-function getContext$1 ( node, options ) {
-	if ( isString( node ) ) {
-		node = this.find( node, options );
-	}
-
-	return getContext$2( node );
-}
-
-function getNodeInfo$$1 ( node, options ) {
-	if ( isString( node ) ) {
-		node = this.find( node, options );
-	}
-
-	return getNodeInfo$1( node );
-}
-
-var html   = 'http://www.w3.org/1999/xhtml';
-var mathml = 'http://www.w3.org/1998/Math/MathML';
-var svg$1    = 'http://www.w3.org/2000/svg';
-var xlink  = 'http://www.w3.org/1999/xlink';
-var xml    = 'http://www.w3.org/XML/1998/namespace';
-var xmlns  = 'http://www.w3.org/2000/xmlns';
-
-var namespaces = { html: html, mathml: mathml, svg: svg$1, xlink: xlink, xml: xml, xmlns: xmlns };
-
-var createElement;
-var matches;
-var div;
-var methodNames;
-var unprefixed;
-var prefixed;
-var i;
-var j;
-var makeFunction;
-
-// Test for SVG support
-if ( !svg ) {
-	/* istanbul ignore next */
-	createElement = function ( type, ns, extend ) {
-		if ( ns && ns !== html ) {
-			throw 'This browser does not support namespaces other than http://www.w3.org/1999/xhtml. The most likely cause of this error is that you\'re trying to render SVG in an older browser. See http://ractive.js.org/support/#svgs for more information';
-		}
-
-		return extend ?
-			doc.createElement( type, extend ) :
-			doc.createElement( type );
-	};
-} else {
-	createElement = function ( type, ns, extend ) {
-		if ( !ns || ns === html ) {
-			return extend ?
-				doc.createElement( type, extend ) :
-				doc.createElement( type );
-		}
-
-		return extend ?
-			doc.createElementNS( ns, type, extend ) :
-			doc.createElementNS( ns, type );
-	};
-}
-
-function createDocumentFragment () {
-	return doc.createDocumentFragment();
-}
-
-function getElement ( input ) {
-	var output;
-
-	if ( !input || typeof input === 'boolean' ) { return; }
-
-	/* istanbul ignore next */
-	if ( !win || !doc || !input ) {
-		return null;
-	}
-
-	// We already have a DOM node - no work to do. (Duck typing alert!)
-	if ( input.nodeType ) {
-		return input;
-	}
-
-	// Get node from string
-	if ( isString( input ) ) {
-		// try ID first
-		output = doc.getElementById( input );
-
-		// then as selector, if possible
-		if ( !output && doc.querySelector ) {
-			try {
-				output = doc.querySelector( input );
-			} catch (e) { /* this space intentionally left blank */ }
-		}
-
-		// did it work?
-		if ( output && output.nodeType ) {
-			return output;
-		}
-	}
-
-	// If we've been given a collection (jQuery, Zepto etc), extract the first item
-	if ( input[0] && input[0].nodeType ) {
-		return input[0];
-	}
-
-	return null;
-}
-
-if ( !isClient ) {
-	matches = null;
-} else {
-	div = createElement( 'div' );
-	methodNames = [ 'matches', 'matchesSelector' ];
-
-	makeFunction = function ( methodName ) {
-		return function ( node, selector ) {
-			return node[ methodName ]( selector );
-		};
-	};
-
-	i = methodNames.length;
-
-	while ( i-- && !matches ) {
-		unprefixed = methodNames[i];
-
-		if ( div[ unprefixed ] ) {
-			matches = makeFunction( unprefixed );
-		} else {
-			j = vendors.length;
-			while ( j-- ) {
-				prefixed = vendors[i] + unprefixed.substr( 0, 1 ).toUpperCase() + unprefixed.substring( 1 );
-
-				if ( div[ prefixed ] ) {
-					matches = makeFunction( prefixed );
-					break;
-				}
-			}
-		}
-	}
-
-	// IE8... and apparently phantom some?
-	/* istanbul ignore next */
-	if ( !matches ) {
-		matches = function ( node, selector ) {
-			var parentNode, i;
-
-			parentNode = node.parentNode;
-
-			if ( !parentNode ) {
-				// empty dummy <div>
-				div.innerHTML = '';
-
-				parentNode = div;
-				node = node.cloneNode();
-
-				div.appendChild( node );
-			}
-
-			var nodes = parentNode.querySelectorAll( selector );
-
-			i = nodes.length;
-			while ( i-- ) {
-				if ( nodes[i] === node ) {
-					return true;
-				}
-			}
-
-			return false;
-		};
-	}
-}
-
-function detachNode ( node ) {
-	// stupid ie
-	if ( node && typeof node.parentNode !== 'unknown' && node.parentNode ) { // eslint-disable-line valid-typeof
-		node.parentNode.removeChild( node );
-	}
-
-	return node;
-}
-
-function safeToStringValue ( value ) {
-	return ( value == null || ( isNumber( value ) && isNaN( value ) ) || !value.toString ) ? '' : '' + value;
-}
-
-function safeAttributeString ( string ) {
-	return safeToStringValue( string )
-		.replace( /&/g, '&amp;' )
-		.replace( /"/g, '&quot;' )
-		.replace( /'/g, '&#39;' );
-}
-
-var insertHook = new Hook( 'insert' );
-
-function Ractive$insert ( target, anchor ) {
-	if ( !this.fragment.rendered ) {
-		// TODO create, and link to, documentation explaining this
-		throw new Error( 'The API has changed - you must call `ractive.render(target[, anchor])` to render your Ractive instance. Once rendered you can use `ractive.insert()`.' );
-	}
-
-	target = getElement( target );
-	anchor = getElement( anchor ) || null;
-
-	if ( !target ) {
-		throw new Error( 'You must specify a valid target to insert into' );
-	}
-
-	target.insertBefore( this.detach(), anchor );
-	this.el = target;
-
-	( target.__ractive_instances__ || ( target.__ractive_instances__ = [] ) ).push( this );
-	this.isDetached = false;
-
-	fireInsertHook( this );
-}
-
-function fireInsertHook( ractive ) {
-	insertHook.fire( ractive );
-
-	ractive.findAllComponents('*').forEach( function (child) {
-		fireInsertHook( child.instance );
-	});
-}
-
-function link ( there, here, options ) {
-	var model;
-	var target = ( options && ( options.ractive || options.instance ) ) || this;
-
-	// may need to allow a mapping to resolve implicitly
-	var sourcePath = splitKeypath( there );
-	if ( !target.viewmodel.has( sourcePath[0] ) && target.component ) {
-		model = resolveReference( target.component.up, sourcePath[0] );
-		model = model.joinAll( sourcePath.slice( 1 ) );
-	}
-
-	var src = model || target.viewmodel.joinAll( sourcePath );
-	var dest = this.viewmodel.joinAll( splitKeypath( here ), { lastLink: false });
-
-	if ( isUpstream( src, dest ) || isUpstream( dest, src ) ) {
-		throw new Error( 'A keypath cannot be linked to itself.' );
-	}
-
-	var promise = runloop.start();
-
-	dest.link( src, ( options && options.keypath ) || there );
-
-	runloop.end();
-
-	return promise;
-}
-
-function isUpstream ( check, start ) {
-	var model = start;
-	while ( model ) {
-		if ( model === check || model.owner === check ) { return true; }
-		model = model.target || model.parent;
-	}
-}
-
-var Observer = function Observer ( ractive, model, callback, options ) {
-	this.context = options.context || ractive;
-	this.callback = callback;
-	this.ractive = ractive;
-	this.keypath = options.keypath;
-	this.options = options;
-
-	if ( model ) { this.resolved( model ); }
-
-	if ( isFunction( options.old ) ) {
-		this.oldContext = create( ractive );
-		this.oldFn = options.old;
-	}
-
-	if ( options.init !== false ) {
-		this.dirty = true;
-		this.dispatch();
-	} else {
-		updateOld( this );
-	}
-
-	this.dirty = false;
-};
-var Observer__proto__ = Observer.prototype;
-
-Observer__proto__.cancel = function cancel () {
-	this.cancelled = true;
-	if ( this.model ) {
-		this.model.unregister( this );
-	} else {
-		this.resolver.unbind();
-	}
-	removeFromArray( this.ractive._observers, this );
-};
-
-Observer__proto__.dispatch = function dispatch () {
-	if ( !this.cancelled ) {
-		this.callback.call( this.context, this.newValue, this.oldValue, this.keypath );
-		updateOld( this, true );
-		this.dirty = false;
-	}
-};
-
-Observer__proto__.handleChange = function handleChange () {
-		var this$1 = this;
-
-	if ( !this.dirty ) {
-		var newValue = this.model.get();
-		if ( isEqual( newValue, this.oldValue ) ) { return; }
-
-		this.newValue = newValue;
-
-		if ( this.options.strict && this.newValue === this.oldValue ) { return; }
-
-		runloop.addObserver( this, this.options.defer );
-		this.dirty = true;
-
-		if ( this.options.once ) { runloop.scheduleTask( function () { return this$1.cancel(); } ); }
-	}
-};
-
-Observer__proto__.rebind = function rebind ( next, previous ) {
-		var this$1 = this;
-
-	next = rebindMatch( this.keypath, next, previous );
-	if ( next === this.model ) { return false; }
-
-	if ( this.model ) { this.model.unregister( this ); }
-	if ( next ) { next.addShuffleTask( function () { return this$1.resolved( next ); } ); }
-};
-
-Observer__proto__.resolved = function resolved ( model ) {
-	this.model = model;
-
-	this.oldValue = undefined;
-	this.newValue = model.get();
-
-	model.register( this );
-};
-
-function updateOld( observer, fresh ) {
-	var next = fresh ? ( observer.model ? observer.model.get() : observer.newValue ) : observer.newValue;
-	observer.oldValue = observer.oldFn ? observer.oldFn.call( observer.oldContext, undefined, next, observer.keypath ) : next;
-}
-
-var star$1 = /\*+/g;
-
-var PatternObserver = function PatternObserver ( ractive, baseModel, keys$$1, callback, options ) {
-	var this$1 = this;
-
-	this.context = options.context || ractive;
-	this.ractive = ractive;
-	this.baseModel = baseModel;
-	this.keys = keys$$1;
-	this.callback = callback;
-
-	var pattern = keys$$1.join( '\\.' ).replace( star$1, '(.+)' );
-	var baseKeypath = this.baseKeypath = baseModel.getKeypath( ractive );
-	this.pattern = new RegExp( ("^" + (baseKeypath ? baseKeypath + '\\.' : '') + pattern + "$") );
-	this.recursive = keys$$1.length === 1 && keys$$1[0] === '**';
-	if ( this.recursive ) { this.keys = [ '*' ]; }
-	if ( options.old ) {
-		this.oldContext = create( ractive );
-		this.oldFn = options.old;
-	}
-
-	this.oldValues = {};
-	this.newValues = {};
-
-	this.defer = options.defer;
-	this.once = options.once;
-	this.strict = options.strict;
-
-	this.dirty = false;
-	this.changed = [];
-	this.partial = false;
-	this.links = options.links;
-
-	var models = baseModel.findMatches( this.keys );
-
-	models.forEach( function (model) {
-		this$1.newValues[ model.getKeypath( this$1.ractive ) ] = model.get();
-	});
-
-	if ( options.init !== false ) {
-		this.dispatch();
-	} else {
-		updateOld$1( this, this.newValues );
-	}
-
-	baseModel.registerPatternObserver( this );
-};
-var PatternObserver__proto__ = PatternObserver.prototype;
-
-PatternObserver__proto__.cancel = function cancel () {
-	this.baseModel.unregisterPatternObserver( this );
-	removeFromArray( this.ractive._observers, this );
-};
-
-PatternObserver__proto__.dispatch = function dispatch () {
-		var this$1 = this;
-
-	var newValues = this.newValues;
-	this.newValues = {};
-	keys( newValues ).forEach( function (keypath) {
-		var newValue = newValues[ keypath ];
-		var oldValue = this$1.oldValues[ keypath ];
-
-		if ( this$1.strict && newValue === oldValue ) { return; }
-		if ( isEqual( newValue, oldValue ) ) { return; }
-
-		var args = [ newValue, oldValue, keypath ];
-		if ( keypath ) {
-			var wildcards = this$1.pattern.exec( keypath );
-			if ( wildcards ) {
-				args = args.concat( wildcards.slice( 1 ) );
-			}
-		}
-
-		this$1.callback.apply( this$1.context, args );
-	});
-
-	updateOld$1( this, newValues, this.partial );
-
-	this.dirty = false;
-};
-
-PatternObserver__proto__.notify = function notify ( key ) {
-	this.changed.push( key );
-};
-
-PatternObserver__proto__.shuffle = function shuffle ( newIndices ) {
-		var this$1 = this;
-
-	if ( !isArray( this.baseModel.value ) ) { return; }
-
-	var max = this.baseModel.value.length;
-
-	for ( var i = 0; i < newIndices.length; i++ ) {
-		if ( newIndices[ i ] === -1 || newIndices[ i ] === i ) { continue; }
-		this$1.changed.push([ i ]);
-	}
-
-	for ( var i$1 = newIndices.touchedFrom; i$1 < max; i$1++ ) {
-		this$1.changed.push([ i$1 ]);
-	}
-};
-
-PatternObserver__proto__.handleChange = function handleChange () {
-		var this$1 = this;
-
-	if ( !this.dirty || this.changed.length ) {
-		if ( !this.dirty ) { this.newValues = {}; }
-
-		if ( !this.changed.length ) {
-			this.baseModel.findMatches( this.keys ).forEach( function (model) {
-				var keypath = model.getKeypath( this$1.ractive );
-				this$1.newValues[ keypath ] = model.get();
-			});
-			this.partial = false;
-		} else {
-			var count = 0;
-
-			if ( this.recursive ) {
-				this.changed.forEach( function (keys$$1) {
-					var model = this$1.baseModel.joinAll( keys$$1 );
-					if ( model.isLink && !this$1.links ) { return; }
-					count++;
-					this$1.newValues[ model.getKeypath( this$1.ractive ) ] = model.get();
-				});
-			} else {
-				var ok = this.baseModel.isRoot ?
-					this.changed.map( function (keys$$1) { return keys$$1.map( escapeKey ).join( '.' ); } ) :
-					this.changed.map( function (keys$$1) { return this$1.baseKeypath + '.' + keys$$1.map( escapeKey ).join( '.' ); } );
-
-				this.baseModel.findMatches( this.keys ).forEach( function (model) {
-					var keypath = model.getKeypath( this$1.ractive );
-					var check = function (k) {
-						return ( k.indexOf( keypath ) === 0 && ( k.length === keypath.length || k[ keypath.length ] === '.' ) ) ||
-							( keypath.indexOf( k ) === 0 && ( k.length === keypath.length || keypath[ k.length ] === '.' ) );
-					};
-
-					// is this model on a changed keypath?
-					if ( ok.filter( check ).length ) {
-						count++;
-						this$1.newValues[ keypath ] = model.get();
-					}
-				});
-			}
-
-			// no valid change triggered, so bail to avoid breakage
-			if ( !count ) { return; }
-
-			this.partial = true;
-		}
-
-		runloop.addObserver( this, this.defer );
-		this.dirty = true;
-		this.changed.length = 0;
-
-		if ( this.once ) { this.cancel(); }
-	}
-};
-
-function updateOld$1( observer, vals, partial ) {
-	var olds = observer.oldValues;
-
-	if ( observer.oldFn ) {
-		if ( !partial ) { observer.oldValues = {}; }
-
-		keys( vals ).forEach( function (k) {
-			var args = [ olds[k], vals[k], k ];
-			var parts = observer.pattern.exec( k );
-			if ( parts ) {
-				args.push.apply( args, parts.slice( 1 ) );
-			}
-			observer.oldValues[k] = observer.oldFn.apply( observer.oldContext, args );
-		});
-	} else {
-		if ( partial ) {
-			keys( vals ).forEach( function (k) { return olds[k] = vals[k]; } );
-		} else {
-			observer.oldValues = vals;
-		}
-	}
-}
-
-function negativeOne () {
-	return -1;
-}
-
-var ArrayObserver = function ArrayObserver ( ractive, model, callback, options ) {
-	this.ractive = ractive;
-	this.model = model;
-	this.keypath = model.getKeypath();
-	this.callback = callback;
-	this.options = options;
-
-	this.pending = null;
-
-	model.register( this );
-
-	if ( options.init !== false ) {
-		this.sliced = [];
-		this.shuffle([]);
-		this.dispatch();
-	} else {
-		this.sliced = this.slice();
-	}
-};
-var ArrayObserver__proto__ = ArrayObserver.prototype;
-
-ArrayObserver__proto__.cancel = function cancel () {
-	this.model.unregister( this );
-	removeFromArray( this.ractive._observers, this );
-};
-
-ArrayObserver__proto__.dispatch = function dispatch () {
-	this.callback( this.pending );
-	this.pending = null;
-	if ( this.options.once ) { this.cancel(); }
-};
-
-ArrayObserver__proto__.handleChange = function handleChange ( path ) {
-	if ( this.pending ) {
-		// post-shuffle
-		runloop.addObserver( this, this.options.defer );
-	} else if ( !path ) {
-		// entire array changed
-		this.shuffle( this.sliced.map( negativeOne ) );
-		this.handleChange();
-	}
-};
-
-ArrayObserver__proto__.shuffle = function shuffle ( newIndices ) {
-		var this$1 = this;
-
-	var newValue = this.slice();
-
-	var inserted = [];
-	var deleted = [];
-	var start;
-
-	var hadIndex = {};
-
-	newIndices.forEach( function ( newIndex, oldIndex ) {
-		hadIndex[ newIndex ] = true;
-
-		if ( newIndex !== oldIndex && start === undefined ) {
-			start = oldIndex;
-		}
-
-		if ( newIndex === -1 ) {
-			deleted.push( this$1.sliced[ oldIndex ] );
-		}
-	});
-
-	if ( start === undefined ) { start = newIndices.length; }
-
-	var len = newValue.length;
-	for ( var i = 0; i < len; i += 1 ) {
-		if ( !hadIndex[i] ) { inserted.push( newValue[i] ); }
-	}
-
-	this.pending = { inserted: inserted, deleted: deleted, start: start };
-	this.sliced = newValue;
-};
-
-ArrayObserver__proto__.slice = function slice () {
-	var value = this.model.get();
-	return isArray( value ) ? value.slice() : [];
-};
-
-function observe ( keypath, callback, options ) {
-	var this$1 = this;
-
-	var observers = [];
-	var map;
-	var opts;
-
-	if ( isObject( keypath ) ) {
-		map = keypath;
-		opts = callback || {};
-	} else {
-		if ( isFunction( keypath ) ) {
-			map = { '': keypath };
-			opts = callback || {};
-		} else {
-			map = {};
-			map[ keypath ] = callback;
-			opts = options || {};
-		}
-	}
-
-	var silent = false;
-	keys( map ).forEach( function (keypath) {
-		var callback = map[ keypath ];
-		var caller = function () {
-			var args = [], len = arguments.length;
-			while ( len-- ) args[ len ] = arguments[ len ];
-
-			if ( silent ) { return; }
-			return callback.apply( this, args );
-		};
-
-		var keypaths = keypath.split( ' ' );
-		if ( keypaths.length > 1 ) { keypaths = keypaths.filter( function (k) { return k; } ); }
-
-		keypaths.forEach( function (keypath) {
-			opts.keypath = keypath;
-			var observer = createObserver( this$1, keypath, caller, opts );
-			if ( observer ) { observers.push( observer ); }
-		});
-	});
-
-	// add observers to the Ractive instance, so they can be
-	// cancelled on ractive.teardown()
-	this._observers.push.apply( this._observers, observers );
-
-	return {
-		cancel: function () { return observers.forEach( function (o) { return o.cancel(); } ); },
-		isSilenced: function () { return silent; },
-		silence: function () { return silent = true; },
-		resume: function () { return silent = false; }
-	};
-}
-
-function createObserver ( ractive, keypath, callback, options ) {
-	var keys$$1 = splitKeypath( keypath );
-	var wildcardIndex = keys$$1.indexOf( '*' );
-	if ( !~wildcardIndex ) { wildcardIndex = keys$$1.indexOf( '**' ); }
-
-	options.fragment = options.fragment || ractive.fragment;
-
-	var model;
-	if ( !options.fragment ) {
-		model = ractive.viewmodel.joinKey( keys$$1[0] );
-	} else {
-		// .*.whatever relative wildcard is a special case because splitkeypath doesn't handle the leading .
-		if ( ~keys$$1[0].indexOf( '.*' ) ) {
-			model = options.fragment.findContext();
-			wildcardIndex = 0;
-			keys$$1[0] = keys$$1[0].slice( 1 );
-		} else {
-			model = wildcardIndex === 0 ? options.fragment.findContext() : resolveReference( options.fragment, keys$$1[0] );
-		}
-	}
-
-	// the model may not exist key
-	if ( !model ) { model = ractive.viewmodel.joinKey( keys$$1[0] ); }
-
-	if ( !~wildcardIndex ) {
-		model = model.joinAll( keys$$1.slice( 1 ) );
-		if ( options.array ) {
-			return new ArrayObserver( ractive, model, callback, options );
-		} else {
-			return new Observer( ractive, model, callback, options );
-		}
-	} else {
-		var double = keys$$1.indexOf( '**' );
-		if ( ~double ) {
-			if ( double + 1 !== keys$$1.length || ~keys$$1.indexOf( '*' ) ) {
-				warnOnceIfDebug( "Recursive observers may only specify a single '**' at the end of the path." );
-				return;
-			}
-		}
-
-		model = model.joinAll( keys$$1.slice( 1, wildcardIndex ) );
-
-		return new PatternObserver( ractive, model, keys$$1.slice( wildcardIndex ), callback, options );
-	}
-}
-
-var onceOptions = { init: false, once: true };
-
-function observeOnce ( keypath, callback, options ) {
-	if ( isObject( keypath ) || isFunction( keypath ) ) {
-		options = assign( callback || {}, onceOptions );
-		return this.observe( keypath, options );
-	}
-
-	options = assign( options || {}, onceOptions );
-	return this.observe( keypath, callback, options );
-}
-
-var trim = function (str) { return str.trim(); };
-
-var notEmptyString = function (str) { return str !== ''; };
-
-function Ractive$off ( eventName, callback ) {
-	var this$1 = this;
-
-	// if no event is specified, remove _all_ event listeners
-	if ( !eventName ) {
-		this._subs = {};
-	} else {
-		// Handle multiple space-separated event names
-		var eventNames = eventName.split( ' ' ).map( trim ).filter( notEmptyString );
-
-		eventNames.forEach( function (event) {
-			var subs = this$1._subs[ event ];
-			// if given a specific callback to remove, remove only it
-			if ( subs && callback ) {
-				var entry = subs.find( function (s) { return s.callback === callback; } );
-				if ( entry ) {
-					removeFromArray( subs, entry );
-					entry.off = true;
-
-					if ( event.indexOf( '.' ) ) { this$1._nsSubs--; }
-				}
-			}
-
-			// otherwise, remove all listeners for this event
-			else if ( subs ) {
-				if ( event.indexOf( '.' ) ) { this$1._nsSubs -= subs.length; }
-				subs.length = 0;
-			}
-		});
-	}
-
-	return this;
-}
-
-function Ractive$on ( eventName, callback ) {
-	var this$1 = this;
-
-	// eventName may already be a map
-	var map = isObjectType( eventName ) ? eventName : {};
-	// or it may be a string along with a callback
-	if ( isString( eventName ) ) { map[ eventName ] = callback; }
-
-	var silent = false;
-	var events = [];
-
-	var loop = function ( k ) {
-		var callback$1 = map[k];
-		var caller = function () {
-			var args = [], len = arguments.length;
-			while ( len-- ) args[ len ] = arguments[ len ];
-
-			if ( !silent ) { return callback$1.apply( this, args ); }
-		};
-		var entry = {
-			callback: callback$1,
-			handler: caller
-		};
-
-		if ( hasOwn( map, k ) ) {
-			var names = k.split( ' ' ).map( trim ).filter( notEmptyString );
-			names.forEach( function (n) {
-				( this$1._subs[ n ] || ( this$1._subs[ n ] = [] ) ).push( entry );
-				if ( n.indexOf( '.' ) ) { this$1._nsSubs++; }
-				events.push( [ n, entry ] );
-			});
-		}
-	};
-
-	for ( var k in map ) loop( k );
-
-	return {
-		cancel: function () { return events.forEach( function (e) { return this$1.off( e[0], e[1].callback ); } ); },
-		isSilenced: function () { return silent; },
-		silence: function () { return silent = true; },
-		resume: function () { return silent = false; }
-	};
-}
-
-function Ractive$once ( eventName, handler ) {
-	var listener = this.on( eventName, function () {
-		handler.apply( this, arguments );
-		listener.cancel();
-	});
-
-	// so we can still do listener.cancel() manually
-	return listener;
-}
-
-var pop = makeArrayMethod( 'pop' ).path;
-
-var push = makeArrayMethod( 'push' ).path;
-
-function readLink ( keypath, options ) {
-	if ( options === void 0 ) options = {};
-
-	var path = splitKeypath( keypath );
-
-	if ( this.viewmodel.has( path[0] ) ) {
-		var model = this.viewmodel.joinAll( path );
-
-		if ( !model.isLink ) { return; }
-
-		while ( ( model = model.target ) && options.canonical !== false ) {
-			if ( !model.isLink ) { break; }
-		}
-
-		if ( model ) { return { ractive: model.root.ractive, keypath: model.getKeypath() }; }
-	}
-}
-
-var PREFIX = '/* Ractive.js component styles */';
-
-// Holds current definitions of styles.
-var styleDefinitions = [];
-
-// Flag to tell if we need to update the CSS
-var isDirty = false;
-
-// These only make sense on the browser. See additional setup below.
-var styleElement = null;
-var useCssText = null;
-
-function addCSS ( styleDefinition ) {
-	styleDefinitions.push( styleDefinition );
-	isDirty = true;
-}
-
-function applyCSS ( force ) {
-	var styleElement = style();
-
-	// Apply only seems to make sense when we're in the DOM. Server-side renders
-	// can call toCSS to get the updated CSS.
-	if ( !styleElement || ( !force && !isDirty ) ) { return; }
-
-	if ( useCssText ) {
-		styleElement.styleSheet.cssText = getCSS( null );
-	} else {
-		styleElement.innerHTML = getCSS( null );
-	}
-
-	isDirty = false;
-}
-
-function getCSS ( cssIds ) {
-	var filteredStyleDefinitions = cssIds ? styleDefinitions.filter( function (style) { return ~cssIds.indexOf( style.id ); } ) : styleDefinitions;
-
-	filteredStyleDefinitions.forEach( function (d) { return d.applied = true; } );
-
-	return filteredStyleDefinitions.reduce( function ( styles, style ) { return ("" + (styles ? (styles + "\n\n/* {" + (style.id) + "} */\n" + (style.styles)) : '')); }, PREFIX );
-}
-
-function style () {
-	// If we're on the browser, additional setup needed.
-	if ( doc && !styleElement ) {
-		styleElement = doc.createElement( 'style' );
-		styleElement.type = 'text/css';
-		styleElement.setAttribute( 'data-ractive-css', '' );
-
-		doc.getElementsByTagName( 'head' )[0].appendChild( styleElement );
-
-		useCssText = !!styleElement.styleSheet;
-	}
-
-	return styleElement;
-}
-
-var adaptConfigurator = {
-	extend: function ( Parent, proto, options ) {
-		proto.adapt = combine( proto.adapt, ensureArray( options.adapt ) );
-	},
-
-	init: function init () {}
-};
-
-var remove = /\/\*(?:[\s\S]*?)\*\//g;
-var escape = /url\(\s*(['"])(?:\\[\s\S]|(?!\1).)*\1\s*\)|url\((?:\\[\s\S]|[^)])*\)|(['"])(?:\\[\s\S]|(?!\2).)*\2/gi;
-var value = /\0(\d+)/g;
-
-// Removes comments and strings from the given CSS to make it easier to parse.
-// Callback receives the cleaned CSS and a function which can be used to put
-// the removed strings back in place after parsing is done.
-var cleanCss = function ( css, callback, additionalReplaceRules ) {
-	if ( additionalReplaceRules === void 0 ) additionalReplaceRules = [];
-
-	var values = [];
-	var reconstruct = function (css) { return css.replace( value, function ( match, n ) { return values[ n ]; } ); };
-	css = css.replace( escape, function (match) { return ("\u0000" + (values.push( match ) - 1)); }).replace( remove, '' );
-
-	additionalReplaceRules.forEach( function ( pattern ) {
-		css = css.replace( pattern, function (match) { return ("\u0000" + (values.push( match ) - 1)); } );
-	});
-
-	return callback( css, reconstruct );
-};
-
-var selectorsPattern = /(?:^|\}|\{)\s*([^\{\}\0]+)\s*(?=\{)/g;
-var keyframesDeclarationPattern = /@keyframes\s+[^\{\}]+\s*\{(?:[^{}]+|\{[^{}]+})*}/gi;
-var selectorUnitPattern = /((?:(?:\[[^\]]+\])|(?:[^\s\+\>~:]))+)((?:::?[^\s\+\>\~\(:]+(?:\([^\)]+\))?)*\s*[\s\+\>\~]?)\s*/g;
-var excludePattern = /^(?:@|\d+%)/;
-var dataRvcGuidPattern = /\[data-ractive-css~="\{[a-z0-9-]+\}"]/g;
-
-function trim$1 ( str ) {
-	return str.trim();
-}
-
-function extractString ( unit ) {
-	return unit.str;
-}
-
-function transformSelector ( selector, parent ) {
-	var selectorUnits = [];
-	var match;
-
-	while ( match = selectorUnitPattern.exec( selector ) ) {
-		selectorUnits.push({
-			str: match[0],
-			base: match[1],
-			modifiers: match[2]
-		});
-	}
-
-	// For each simple selector within the selector, we need to create a version
-	// that a) combines with the id, and b) is inside the id
-	var base = selectorUnits.map( extractString );
-
-	var transformed = [];
-	var i = selectorUnits.length;
-
-	while ( i-- ) {
-		var appended = base.slice();
-
-		// Pseudo-selectors should go after the attribute selector
-		var unit = selectorUnits[i];
-		appended[i] = unit.base + parent + unit.modifiers || '';
-
-		var prepended = base.slice();
-		prepended[i] = parent + ' ' + prepended[i];
-
-		transformed.push( appended.join( ' ' ), prepended.join( ' ' ) );
-	}
-
-	return transformed.join( ', ' );
-}
-
-function transformCss ( css, id ) {
-	var dataAttr = "[data-ractive-css~=\"{" + id + "}\"]";
-
-	var transformed;
-
-	if ( dataRvcGuidPattern.test( css ) ) {
-		transformed = css.replace( dataRvcGuidPattern, dataAttr );
-	} else {
-		transformed = cleanCss( css, function ( css, reconstruct ) {
-			css = css.replace( selectorsPattern, function ( match, $1 ) {
-				// don't transform at-rules and keyframe declarations
-				if ( excludePattern.test( $1 ) ) { return match; }
-
-				var selectors = $1.split( ',' ).map( trim$1 );
-				var transformed = selectors
-					.map( function (selector) { return transformSelector( selector, dataAttr ); } )
-					.join( ', ' ) + ' ';
-
-				return match.replace( $1, transformed );
-			});
-
-			return reconstruct( css );
-		}, [ keyframesDeclarationPattern ]);
-	}
-
-	return transformed;
-}
-
-function s4() {
-	return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
-}
-
-function uuid() {
-	return s4() + s4() + '-' + s4() + '-' + s4() + '-' + s4() + '-' + s4() + s4() + s4();
-}
-
-function setCSSData ( keypath, value, options ) {
-	var opts = isObjectType( keypath ) ? value : options;
-	var model = this._cssModel;
-
-	model.locked = true;
-	var promise = set( build( { viewmodel: model }, keypath, value, true ), opts );
-	model.locked = false;
-
-	var cascade = runloop.start();
-	this.extensions.forEach( function (e) {
-		var model = e._cssModel;
-		model.mark();
-		model.downstreamChanged( '', 1 );
-	});
-	runloop.end();
-
-	applyChanges( this, !opts || opts.apply !== false );
-
-	return promise.then( function () { return cascade; } );
-}
-
-function applyChanges ( component, apply ) {
-	var local = recomputeCSS( component );
-	var child = component.extensions.map( function (e) { return applyChanges( e, false ); } ).
-	  reduce( function ( a, c ) { return c || a; }, false );
-
-	if ( apply && ( local || child ) ) {
-		var def = component._cssDef;
-		if ( !def || ( def && def.applied ) ) { applyCSS( true ); }
-	}
-
-	return local || child;
-}
-
-function recomputeCSS ( component ) {
-	var css = component._css;
-
-	if ( !isFunction( css ) ) { return; }
-
-	var def = component._cssDef;
-	var result = evalCSS( component, css );
-	var styles = def.transform ? transformCss( result, def.id ) : result;
-
-	if ( def.styles === styles ) { return; }
-
-	def.styles = styles;
-
-	return true;
-}
-
-var CSSModel = (function (SharedModel) {
-	function CSSModel ( component ) {
-		SharedModel.call( this, component.cssData, '@style' );
-		this.component = component;
-	}
-
-	if ( SharedModel ) CSSModel.__proto__ = SharedModel;
-	var CSSModel__proto__ = CSSModel.prototype = Object.create( SharedModel && SharedModel.prototype );
-	CSSModel__proto__.constructor = CSSModel;
-
-	CSSModel__proto__.downstreamChanged = function downstreamChanged ( path, depth ) {
-		if ( this.locked ) { return; }
-
-		var component = this.component;
-
-		component.extensions.forEach( function (e) {
-			var model = e._cssModel;
-			model.mark();
-			model.downstreamChanged( path, depth || 1 );
-		});
-
-		if ( !depth ) {
-			applyChanges( component, true );
-		}
-	};
-
-	return CSSModel;
-}(SharedModel));
-
-var hasCurly = /\{/;
-var cssConfigurator = {
-	name: 'css',
-
-	// Called when creating a new component definition
-	extend: function ( Parent, proto, options, Child ) {
-		Child._cssIds = gatherIds( Parent );
-
-		defineProperty( Child, 'cssData', {
-			configurable: true,
-			value: assign( create( Parent.cssData ), options.cssData || {} )
-		});
-
-		defineProperty( Child, '_cssModel', {
-			configurable: true,
-			value: new CSSModel( Child )
-		});
-
-		if ( options.css ) { initCSS( options, Child, proto ); }
-	},
-
-	// Called when creating a new component instance
-	init: function ( Parent, target, options ) {
-		if ( !options.css ) { return; }
-
-		warnIfDebug( "\nThe css option is currently not supported on a per-instance basis and will be discarded. Instead, we recommend instantiating from a component definition with a css option.\n\nconst Component = Ractive.extend({\n\t...\n\tcss: '/* your css */',\n\t...\n});\n\nconst componentInstance = new Component({ ... })\n\t\t" );
-	}
-};
-
-function gatherIds ( start ) {
-	var cmp = start;
-	var ids = [];
-
-	while ( cmp ) {
-		if ( cmp.prototype.cssId ) { ids.push( cmp.prototype.cssId ); }
-		cmp = cmp.Parent;
-	}
-
-	return ids;
-}
-
-function evalCSS ( component, css ) {
-	var cssData = component.cssData;
-	var model = component._cssModel;
-	var data = function data ( path ) {
-		return model.joinAll( splitKeypath( path ) ).get();
-	};
-	data.__proto__ = cssData;
-
-	var result = css.call( component, data );
-	return isString( result ) ? result : '';
-}
-
-function initCSS ( options, target, proto ) {
-	var css = isString( options.css ) && !hasCurly.test( options.css ) ?
-		( getElement( options.css ) || options.css ) :
-		options.css;
-
-	var id = options.cssId || uuid();
-
-	if ( isObjectType( css ) ) {
-		css = 'textContent' in css ? css.textContent : css.innerHTML;
-	} else if ( isFunction( css ) ) {
-		target._css = options.css;
-		css = evalCSS( target, css );
-	}
-
-	var def = target._cssDef = { transform: !options.noCssTransform };
-
-	def.styles = def.transform ? transformCss( css, id ) : css;
-	def.id = proto.cssId = id;
-	target._cssIds.push( id );
-
-	addCSS( target._cssDef );
-}
-
-function validate ( data ) {
-	// Warn if userOptions.data is a non-POJO
-	if ( data && data.constructor !== Object ) {
-		if ( isFunction( data ) ) {
-			// TODO do we need to support this in the new Ractive() case?
-		} else if ( !isObjectType( data ) ) {
-			fatal( ("data option must be an object or a function, `" + data + "` is not valid") );
-		} else {
-			warnIfDebug( 'If supplied, options.data should be a plain JavaScript object - using a non-POJO as the root object may work, but is discouraged' );
-		}
-	}
-}
-
-var dataConfigurator = {
-	name: 'data',
-
-	extend: function ( Parent, proto, options ) {
-		var key;
-		var value;
-
-		// check for non-primitives, which could cause mutation-related bugs
-		if ( options.data && isObject( options.data ) ) {
-			for ( key in options.data ) {
-				value = options.data[ key ];
-
-				if ( value && isObjectType( value ) ) {
-					if ( isObject( value ) || isArray( value ) ) {
-						warnIfDebug( "Passing a `data` option with object and array properties to Ractive.extend() is discouraged, as mutating them is likely to cause bugs. Consider using a data function instead:\n\n  // this...\n  data: function () {\n    return {\n      myObject: {}\n    };\n  })\n\n  // instead of this:\n  data: {\n    myObject: {}\n  }" );
-					}
-				}
-			}
-		}
-
-		proto.data = combine$1( proto.data, options.data );
-	},
-
-	init: function ( Parent, ractive, options ) {
-		var result = combine$1( Parent.prototype.data, options.data );
-
-		if ( isFunction( result ) ) { result = result.call( ractive ); }
-
-		// bind functions to the ractive instance at the top level,
-		// unless it's a non-POJO (in which case alarm bells should ring)
-		if ( result && result.constructor === Object ) {
-			for ( var prop in result ) {
-				if ( isFunction( result[ prop ] ) ) {
-					var value = result[ prop ];
-					result[ prop ] = bind$1( value, ractive );
-					result[ prop ]._r_unbound = value;
-				}
-			}
-		}
-
-		return result || {};
-	},
-
-	reset: function reset ( ractive ) {
-		var result = this.init( ractive.constructor, ractive, ractive.viewmodel );
-		ractive.viewmodel.root.set( result );
-		return true;
-	}
-};
-
-function emptyData () { return {}; }
-
-function combine$1 ( parentValue, childValue ) {
-	validate( childValue );
-
-	var parentIsFn = isFunction( parentValue );
-
-	// Very important, otherwise child instance can become
-	// the default data object on Ractive or a component.
-	// then ractive.set() ends up setting on the prototype!
-	if ( !childValue && !parentIsFn ) {
-		// this needs to be a function so that it can still inherit parent defaults
-		childValue = emptyData;
-	}
-
-	var childIsFn = isFunction( childValue );
-
-	// Fast path, where we just need to copy properties from
-	// parent to child
-	if ( !parentIsFn && !childIsFn ) {
-		return fromProperties( childValue, parentValue );
-	}
-
-	return function () {
-		var child = childIsFn ? callDataFunction( childValue, this ) : childValue;
-		var parent = parentIsFn ? callDataFunction( parentValue, this ) : parentValue;
-
-		return fromProperties( child, parent );
-	};
-}
-
-function callDataFunction ( fn, context ) {
-	var data = fn.call( context );
-
-	if ( !data ) { return; }
-
-	if ( !isObjectType( data ) ) {
-		fatal( 'Data function must return an object' );
-	}
-
-	if ( data.constructor !== Object ) {
-		warnOnceIfDebug( 'Data function returned something other than a plain JavaScript object. This might work, but is strongly discouraged' );
-	}
-
-	return data;
-}
-
-function fromProperties ( primary, secondary ) {
-	if ( primary && secondary ) {
-		for ( var key in secondary ) {
-			if ( !( key in primary ) ) {
-				primary[ key ] = secondary[ key ];
-			}
-		}
-
-		return primary;
-	}
-
-	return primary || secondary;
-}
-
-var TEMPLATE_VERSION = 4;
-
-var pattern = /\$\{([^\}]+)\}/g;
-
 function fromExpression ( body, length ) {
 	if ( length === void 0 ) length = 0;
 
@@ -5297,18 +1747,27 @@ function fromExpression ( body, length ) {
 	return new Function( [], ("return function (" + (args.join(',')) + "){return(" + body + ");};") )();
 }
 
-function fromComputationString ( str, bindTo ) {
-	var hasThis;
+var functions = create( null );
 
-	var functionBody = 'return (' + str.replace( pattern, function ( match, keypath ) {
-		hasThis = true;
-		return ("__ractive.get(\"" + keypath + "\")");
-	}) + ');';
-
-	if ( hasThis ) { functionBody = "var __ractive = this; " + functionBody; }
-	var fn = new Function( functionBody );
-	return hasThis ? fn.bind( bindTo ) : fn;
+function getFunction ( str, i ) {
+	if ( functions[ str ] ) { return functions[ str ]; }
+	return functions[ str ] = createFunction( str, i );
 }
+
+function addFunctions( template ) {
+	if ( !template ) { return; }
+
+	var exp = template.e;
+
+	if ( !exp ) { return; }
+
+	keys( exp ).forEach( function ( str ) {
+		if ( functions[ str ] ) { return; }
+		functions[ str ] = exp[ str ];
+	});
+}
+
+var TEMPLATE_VERSION = 4;
 
 var leadingWhitespace = /^\s+/;
 
@@ -5494,6 +1953,61 @@ Parser.extend = function ( proto ) {
 	return Child;
 };
 
+var TEXT              = 1;
+var INTERPOLATOR      = 2;
+var TRIPLE            = 3;
+var SECTION           = 4;
+var INVERTED          = 5;
+var CLOSING           = 6;
+var ELEMENT           = 7;
+var PARTIAL           = 8;
+var COMMENT           = 9;
+var DELIMCHANGE       = 10;
+var ANCHOR            = 11;
+var ATTRIBUTE         = 13;
+var CLOSING_TAG       = 14;
+var COMPONENT         = 15;
+var YIELDER           = 16;
+var INLINE_PARTIAL    = 17;
+var DOCTYPE           = 18;
+var ALIAS             = 19;
+
+var NUMBER_LITERAL    = 20;
+var STRING_LITERAL    = 21;
+var ARRAY_LITERAL     = 22;
+var OBJECT_LITERAL    = 23;
+var BOOLEAN_LITERAL   = 24;
+var REGEXP_LITERAL    = 25;
+
+var GLOBAL            = 26;
+var KEY_VALUE_PAIR    = 27;
+
+
+var REFERENCE         = 30;
+var REFINEMENT        = 31;
+var MEMBER            = 32;
+var PREFIX_OPERATOR   = 33;
+var BRACKETED         = 34;
+var CONDITIONAL       = 35;
+var INFIX_OPERATOR    = 36;
+
+var INVOCATION        = 40;
+
+var SECTION_IF        = 50;
+var SECTION_UNLESS    = 51;
+var SECTION_EACH      = 52;
+var SECTION_WITH      = 53;
+var SECTION_IF_WITH   = 54;
+
+var ELSE              = 60;
+var ELSEIF            = 61;
+
+var EVENT             = 70;
+var DECORATOR         = 71;
+var TRANSITION        = 72;
+var BINDING_FLAG      = 73;
+var DELEGATE_FLAG     = 74;
+
 var delimiterChangePattern = /^[^\s=]+/;
 var whitespacePattern = /^\s+/;
 
@@ -5550,10 +2064,10 @@ function readNumberLiteral ( parser ) {
 	return null;
 }
 
-var pattern$1 = /[-/\\^$*+?.()|[\]{}]/g;
+var pattern = /[-/\\^$*+?.()|[\]{}]/g;
 
 function escapeRegExp ( str ) {
-	return str.replace( pattern$1, '\\$&' );
+	return str.replace( pattern, '\\$&' );
 }
 
 var regExpCache = {};
@@ -6047,7 +2561,7 @@ var globals = /^(?:Array|console|Date|RegExp|decodeURIComponent|decodeURI|encode
 var keywords = /^(?:break|case|catch|continue|debugger|default|delete|do|else|finally|for|function|if|in|instanceof|new|return|switch|throw|try|typeof|var|void|while|with)$/;
 
 var prefixPattern = /^(?:\@\.|\@|~\/|(?:\^\^\/(?:\^\^\/)*(?:\.\.\/)*)|(?:\.\.\/)+|\.\/(?:\.\.\/)*|\.)/;
-var specials = /^(key|index|keypath|rootpath|this|global|shared|context|event|node|local|style)/;
+var specials = /^(key|index|keypath|rootpath|this|global|shared|context|event|node|local|style|helpers)/;
 
 function readReference ( parser ) {
 	var prefix, name$$1, global, reference, lastDotIndex;
@@ -8296,7 +4810,7 @@ function hasChildren( ref ) {
 	return isArray( ref ) || isObject( ref );
 }
 
-var shared = {};
+var shared$1 = {};
 
 // See https://github.com/ractivejs/template-spec for information
 // about the Ractive template specification
@@ -8313,11 +4827,11 @@ var StandardParser = Parser.extend({
 	init: function init ( str, options ) {
 		var this$1 = this;
 
-		var tripleDelimiters = options.tripleDelimiters || shared.defaults.tripleDelimiters;
-		var staticDelimiters = options.staticDelimiters || shared.defaults.staticDelimiters;
-		var staticTripleDelimiters = options.staticTripleDelimiters || shared.defaults.staticTripleDelimiters;
+		var tripleDelimiters = options.tripleDelimiters || shared$1.defaults.tripleDelimiters;
+		var staticDelimiters = options.staticDelimiters || shared$1.defaults.staticDelimiters;
+		var staticTripleDelimiters = options.staticTripleDelimiters || shared$1.defaults.staticTripleDelimiters;
 
-		this.standardDelimiters = options.delimiters || shared.defaults.delimiters;
+		this.standardDelimiters = options.delimiters || shared$1.defaults.delimiters;
 
 		this.tags = [
 			{ isStatic: false, isTriple: false, open: this.standardDelimiters[0], close: this.standardDelimiters[1], readers: STANDARD_READERS },
@@ -8326,14 +4840,14 @@ var StandardParser = Parser.extend({
 			{ isStatic: true,  isTriple: true,  open: staticTripleDelimiters[0],  close: staticTripleDelimiters[1],  readers: TRIPLE_READERS }
 		];
 
-		this.contextLines = options.contextLines || shared.defaults.contextLines;
+		this.contextLines = options.contextLines || shared$1.defaults.contextLines;
 
 		this.sortMustacheTags();
 
 		this.sectionDepth = 0;
 		this.elementStack = [];
 
-		this.interpolate = create( options.interpolate || shared.defaults.interpolate || {} );
+		this.interpolate = create( options.interpolate || shared$1.defaults.interpolate || {} );
 		this.interpolate.textarea = true;
 		defaultInterpolate.forEach( function (t) { return this$1.interpolate[ t ] = !options.interpolate || options.interpolate[ t ] !== false; } );
 
@@ -8354,28 +4868,36 @@ var StandardParser = Parser.extend({
 		this.csp = options.csp;
 		this.allowExpressions = options.allowExpressions;
 
+		if ( options.expression ) { this.converters = [ readExpression ]; }
+
 		if ( options.attributes ) { this.inTag = true; }
 	},
 
-	postProcess: function postProcess ( result ) {
-		// special case - empty string
-		if ( !result.length ) {
-			return { t: [], v: TEMPLATE_VERSION };
+	postProcess: function postProcess ( result, options ) {
+		if ( options.expression ) {
+			var expr = flattenExpression( result[0] );
+			expr.e = fromExpression( expr.s, expr.r.length );
+			return expr;
+		} else {
+			// special case - empty string
+			if ( !result.length ) {
+				return { t: [], v: TEMPLATE_VERSION };
+			}
+
+			if ( this.sectionDepth > 0 ) {
+				this.error( 'A section was left open' );
+			}
+
+			cleanup( result[0].t, this.stripComments, this.preserveWhitespace, !this.preserveWhitespace, !this.preserveWhitespace );
+
+			if ( this.csp !== false ) {
+				var expr$1 = {};
+				insertExpressions( result[0].t, expr$1 );
+				if ( keys( expr$1 ).length ) { result[0].e = expr$1; }
+			}
+
+			return result[0];
 		}
-
-		if ( this.sectionDepth > 0 ) {
-			this.error( 'A section was left open' );
-		}
-
-		cleanup( result[0].t, this.stripComments, this.preserveWhitespace, !this.preserveWhitespace, !this.preserveWhitespace );
-
-		if ( this.csp !== false ) {
-			var expr = {};
-			insertExpressions( result[0].t, expr );
-			if ( keys( expr ).length ) { result[0].e = expr; }
-		}
-
-		return result[0];
 	},
 
 	converters: [
@@ -8414,7 +4936,6 @@ var TEMPLATE_INSTRUCTIONS = "Either preparse or use a ractive runtime source tha
 
 var COMPUTATION_INSTRUCTIONS = "Either include a version of Ractive that can parse or convert your computation strings to functions.";
 
-
 function throwNoParse ( method, error, instructions ) {
 	if ( !method ) {
 		fatal( ("Missing Ractive.parse - cannot parse " + error + ". " + instructions) );
@@ -8427,8 +4948,11 @@ function createFunction ( body, length ) {
 }
 
 function createFunctionFromString ( str, bindTo ) {
-	throwNoParse( fromComputationString, 'compution string "${str}"', COMPUTATION_INSTRUCTIONS );
-	return fromComputationString( str, bindTo );
+	throwNoParse( parse, 'compution string "${str}"', COMPUTATION_INSTRUCTIONS );
+	var tpl = parse( str, { expression: true } );
+	return function () {
+		return tpl.e.apply( bindTo, tpl.r.map( function (r) { return bindTo.get( r ); } ) );
+	};
 }
 
 var parser = {
@@ -8483,24 +5007,3643 @@ var parser = {
 	}
 };
 
-var functions = create( null );
+function getComputationSignature ( ractive, key, signature ) {
+	var getter;
+	var setter;
 
-function getFunction ( str, i ) {
-	if ( functions[ str ] ) { return functions[ str ]; }
-	return functions[ str ] = createFunction( str, i );
+	// useful for debugging
+	var getterString;
+	var getterUseStack;
+	var setterString;
+
+	if ( isFunction( signature ) ) {
+		getter = bind$1( signature, ractive );
+		getterString = signature.toString();
+		getterUseStack = true;
+	}
+
+	if ( isString( signature ) ) {
+		getter = createFunctionFromString( signature, ractive );
+		getterString = signature;
+	}
+
+	if ( isObjectType( signature ) ) {
+		if ( isString( signature.get ) ) {
+			getter = createFunctionFromString( signature.get, ractive );
+			getterString = signature.get;
+		} else if ( isFunction( signature.get ) ) {
+			getter = bind$1( signature.get, ractive );
+			getterString = signature.get.toString();
+			getterUseStack = true;
+		} else {
+			fatal( '`%s` computation must have a `get()` method', key );
+		}
+
+		if ( isFunction( signature.set ) ) {
+			setter = bind$1( signature.set, ractive );
+			setterString = signature.set.toString();
+		}
+	}
+
+	return {
+		getter: getter,
+		setter: setter,
+		getterString: getterString,
+		setterString: setterString,
+		getterUseStack: getterUseStack
+	};
 }
 
-function addFunctions( template ) {
-	if ( !template ) { return; }
+var TransitionManager = function TransitionManager ( callback, parent ) {
+	this.callback = callback;
+	this.parent = parent;
 
-	var exp = template.e;
+	this.intros = [];
+	this.outros = [];
 
-	if ( !exp ) { return; }
+	this.children = [];
+	this.totalChildren = this.outroChildren = 0;
 
-	keys( exp ).forEach( function ( str ) {
-		if ( functions[ str ] ) { return; }
-		functions[ str ] = exp[ str ];
+	this.detachQueue = [];
+	this.outrosComplete = false;
+
+	if ( parent ) {
+		parent.addChild( this );
+	}
+};
+var TransitionManager__proto__ = TransitionManager.prototype;
+
+TransitionManager__proto__.add = function add ( transition ) {
+	var list = transition.isIntro ? this.intros : this.outros;
+	transition.starting = true;
+	list.push( transition );
+};
+
+TransitionManager__proto__.addChild = function addChild ( child ) {
+	this.children.push( child );
+
+	this.totalChildren += 1;
+	this.outroChildren += 1;
+};
+
+TransitionManager__proto__.decrementOutros = function decrementOutros () {
+	this.outroChildren -= 1;
+	check( this );
+};
+
+TransitionManager__proto__.decrementTotal = function decrementTotal () {
+	this.totalChildren -= 1;
+	check( this );
+};
+
+TransitionManager__proto__.detachNodes = function detachNodes () {
+	this.detachQueue.forEach( detach );
+	this.children.forEach( _detachNodes );
+	this.detachQueue = [];
+};
+
+TransitionManager__proto__.ready = function ready () {
+	if ( this.detachQueue.length ) { detachImmediate( this ); }
+};
+
+TransitionManager__proto__.remove = function remove ( transition ) {
+	var list = transition.isIntro ? this.intros : this.outros;
+	removeFromArray( list, transition );
+	check( this );
+};
+
+TransitionManager__proto__.start = function start () {
+	this.children.forEach( function (c) { return c.start(); } );
+	this.intros.concat( this.outros ).forEach( function (t) { return t.start(); } );
+	this.ready = true;
+	check( this );
+};
+
+function detach ( element ) {
+	element.detach();
+}
+
+function _detachNodes ( tm ) { // _ to avoid transpiler quirk
+	tm.detachNodes();
+}
+
+function check ( tm ) {
+	if ( !tm.ready || tm.outros.length || tm.outroChildren ) { return; }
+
+	// If all outros are complete, and we haven't already done this,
+	// we notify the parent if there is one, otherwise
+	// start detaching nodes
+	if ( !tm.outrosComplete ) {
+		tm.outrosComplete = true;
+
+		if ( tm.parent && !tm.parent.outrosComplete ) {
+			tm.parent.decrementOutros( tm );
+		} else {
+			tm.detachNodes();
+		}
+	}
+
+	// Once everything is done, we can notify parent transition
+	// manager and call the callback
+	if ( !tm.intros.length && !tm.totalChildren ) {
+		if ( isFunction( tm.callback ) ) {
+			tm.callback();
+		}
+
+		if ( tm.parent && !tm.notifiedTotal ) {
+			tm.notifiedTotal = true;
+			tm.parent.decrementTotal();
+		}
+	}
+}
+
+// check through the detach queue to see if a node is up or downstream from a
+// transition and if not, go ahead and detach it
+function detachImmediate ( manager ) {
+	var queue = manager.detachQueue;
+	var outros = collectAllOutros( manager );
+
+	var i = queue.length;
+	var j = 0;
+	var node, trans;
+	start: while ( i-- ) {
+		node = queue[i].node;
+		j = outros.length;
+		while ( j-- ) {
+			trans = outros[j].element.node;
+			// check to see if the node is, contains, or is contained by the transitioning node
+			if ( trans === node || trans.contains( node ) || node.contains( trans ) ) { continue start; }
+		}
+
+		// no match, we can drop it
+		queue[i].detach();
+		queue.splice( i, 1 );
+	}
+}
+
+function collectAllOutros ( manager, _list ) {
+	var list = _list;
+
+	// if there's no list, we're starting at the root to build one
+	if ( !list ) {
+		list = [];
+		var parent = manager;
+		while ( parent.parent ) { parent = parent.parent; }
+		return collectAllOutros( parent, list );
+	} else {
+		// grab all outros from child managers
+		var i = manager.children.length;
+		while ( i-- ) {
+			list = collectAllOutros( manager.children[i], list );
+		}
+
+		// grab any from this manager if there are any
+		if ( manager.outros.length ) { list = list.concat( manager.outros ); }
+
+		return list;
+	}
+}
+
+var batch;
+
+var runloop = {
+	start: function start () {
+		var fulfilPromise;
+		var promise = new Promise( function (f) { return ( fulfilPromise = f ); } );
+
+		batch = {
+			previousBatch: batch,
+			transitionManager: new TransitionManager( fulfilPromise, batch && batch.transitionManager ),
+			fragments: [],
+			tasks: [],
+			immediateObservers: [],
+			deferredObservers: [],
+			promise: promise
+		};
+
+		return promise;
+	},
+
+	end: function end () {
+		flushChanges();
+
+		if ( !batch.previousBatch ) { batch.transitionManager.start(); }
+
+		batch = batch.previousBatch;
+	},
+
+	addFragment: function addFragment ( fragment ) {
+		addToArray( batch.fragments, fragment );
+	},
+
+	// TODO: come up with a better way to handle fragments that trigger their own update
+	addFragmentToRoot: function addFragmentToRoot ( fragment ) {
+		if ( !batch ) { return; }
+
+		var b = batch;
+		while ( b.previousBatch ) {
+			b = b.previousBatch;
+		}
+
+		addToArray( b.fragments, fragment );
+	},
+
+	addObserver: function addObserver ( observer, defer ) {
+		if ( !batch ) {
+			observer.dispatch();
+		} else {
+			addToArray( defer ? batch.deferredObservers : batch.immediateObservers, observer );
+		}
+	},
+
+	registerTransition: function registerTransition ( transition ) {
+		transition._manager = batch.transitionManager;
+		batch.transitionManager.add( transition );
+	},
+
+	// synchronise node detachments with transition ends
+	detachWhenReady: function detachWhenReady ( thing ) {
+		batch.transitionManager.detachQueue.push( thing );
+	},
+
+	scheduleTask: function scheduleTask ( task, postRender ) {
+		var _batch;
+
+		if ( !batch ) {
+			task();
+		} else {
+			_batch = batch;
+			while ( postRender && _batch.previousBatch ) {
+				// this can't happen until the DOM has been fully updated
+				// otherwise in some situations (with components inside elements)
+				// transitions and decorators will initialise prematurely
+				_batch = _batch.previousBatch;
+			}
+
+			_batch.tasks.push( task );
+		}
+	},
+
+	promise: function promise () {
+		if ( !batch ) { return Promise.resolve(); }
+
+		var target = batch;
+		while ( target.previousBatch ) {
+			target = target.previousBatch;
+		}
+
+		return target.promise || Promise.resolve();
+	}
+};
+
+function dispatch ( observer ) {
+	observer.dispatch();
+}
+
+function flushChanges () {
+	var which = batch.immediateObservers;
+	batch.immediateObservers = [];
+	which.forEach( dispatch );
+
+	// Now that changes have been fully propagated, we can update the DOM
+	// and complete other tasks
+	var i = batch.fragments.length;
+	var fragment;
+
+	which = batch.fragments;
+	batch.fragments = [];
+
+	while ( i-- ) {
+		fragment = which[i];
+		fragment.update();
+	}
+
+	batch.transitionManager.ready();
+
+	which = batch.deferredObservers;
+	batch.deferredObservers = [];
+	which.forEach( dispatch );
+
+	var tasks = batch.tasks;
+	batch.tasks = [];
+
+	for ( i = 0; i < tasks.length; i += 1 ) {
+		tasks[i]();
+	}
+
+	// If updating the view caused some model blowback - e.g. a triple
+	// containing <option> elements caused the binding on the <select>
+	// to update - then we start over
+	if ( batch.fragments.length || batch.immediateObservers.length || batch.deferredObservers.length || batch.tasks.length ) { return flushChanges(); }
+}
+
+// TODO what happens if a transition is aborted?
+
+var tickers = [];
+var running = false;
+
+function tick () {
+	runloop.start();
+
+	var now = performance.now();
+
+	var i;
+	var ticker;
+
+	for ( i = 0; i < tickers.length; i += 1 ) {
+		ticker = tickers[i];
+
+		if ( !ticker.tick( now ) ) {
+			// ticker is complete, remove it from the stack, and decrement i so we don't miss one
+			tickers.splice( i--, 1 );
+		}
+	}
+
+	runloop.end();
+
+	if ( tickers.length ) {
+		requestAnimationFrame( tick );
+	} else {
+		running = false;
+	}
+}
+
+var Ticker = function Ticker ( options ) {
+	this.duration = options.duration;
+	this.step = options.step;
+	this.complete = options.complete;
+	this.easing = options.easing;
+
+	this.start = performance.now();
+	this.end = this.start + this.duration;
+
+	this.running = true;
+
+	tickers.push( this );
+	if ( !running ) { requestAnimationFrame( tick ); }
+};
+var Ticker__proto__ = Ticker.prototype;
+
+Ticker__proto__.tick = function tick ( now ) {
+	if ( !this.running ) { return false; }
+
+	if ( now > this.end ) {
+		if ( this.step ) { this.step( 1 ); }
+		if ( this.complete ) { this.complete( 1 ); }
+
+		return false;
+	}
+
+	var elapsed = now - this.start;
+	var eased = this.easing( elapsed / this.duration );
+
+	if ( this.step ) { this.step( eased ); }
+
+	return true;
+};
+
+Ticker__proto__.stop = function stop () {
+	if ( this.abort ) { this.abort(); }
+	this.running = false;
+};
+
+var prefixers = {};
+
+// TODO this is legacy. sooner we can replace the old adaptor API the better
+/* istanbul ignore next */
+function prefixKeypath ( obj, prefix ) {
+	var prefixed = {};
+
+	if ( !prefix ) {
+		return obj;
+	}
+
+	prefix += '.';
+
+	for ( var key in obj ) {
+		if ( hasOwn( obj, key ) ) {
+			prefixed[ prefix + key ] = obj[ key ];
+		}
+	}
+
+	return prefixed;
+}
+
+function getPrefixer ( rootKeypath ) {
+	var rootDot;
+
+	if ( !prefixers[ rootKeypath ] ) {
+		rootDot = rootKeypath ? rootKeypath + '.' : '';
+
+		/* istanbul ignore next */
+		prefixers[ rootKeypath ] = function ( relativeKeypath, value ) {
+			var obj;
+
+			if ( isString( relativeKeypath ) ) {
+				obj = {};
+				obj[ rootDot + relativeKeypath ] = value;
+				return obj;
+			}
+
+			if ( isObjectType( relativeKeypath ) ) {
+				// 'relativeKeypath' is in fact a hash, not a keypath
+				return rootDot ? prefixKeypath( relativeKeypath, rootKeypath ) : relativeKeypath;
+			}
+		};
+	}
+
+	return prefixers[ rootKeypath ];
+}
+
+var shared = {};
+
+var Model = (function (ModelBase) {
+	function Model ( parent, key ) {
+		ModelBase.call( this, parent );
+
+		this.ticker = null;
+
+		if ( parent ) {
+			this.key = unescapeKey( key );
+			this.isReadonly = parent.isReadonly;
+
+			if ( parent.value ) {
+				this.value = parent.value[ this.key ];
+				if ( isArray( this.value ) ) { this.length = this.value.length; }
+				this.adapt();
+			}
+		}
+	}
+
+	if ( ModelBase ) Model.__proto__ = ModelBase;
+	var Model__proto__ = Model.prototype = Object.create( ModelBase && ModelBase.prototype );
+	Model__proto__.constructor = Model;
+
+	Model__proto__.adapt = function adapt () {
+		var this$1 = this;
+
+		var adaptors = this.root.adaptors;
+		var len = adaptors.length;
+
+		this.rewrap = false;
+
+		// Exit early if no adaptors
+		if ( len === 0 ) { return; }
+
+		var value = this.wrapper ? ( 'newWrapperValue' in this ? this.newWrapperValue : this.wrapperValue ) : this.value;
+
+		// TODO remove this legacy nonsense
+		var ractive = this.root.ractive;
+		var keypath = this.getKeypath();
+
+		// tear previous adaptor down if present
+		if ( this.wrapper ) {
+			var shouldTeardown = this.wrapperValue === value ? false : !this.wrapper.reset || this.wrapper.reset( value ) === false;
+
+			if ( shouldTeardown ) {
+				this.wrapper.teardown();
+				delete this.wrapper;
+				delete this.wrapperValue;
+
+				// don't branch for undefined values
+				if ( this.value !== undefined ) {
+					var parentValue = this.parent.value || this.parent.createBranch( this.key );
+					if ( parentValue[ this.key ] !== value ) { parentValue[ this.key ] = value; }
+					this.value = value;
+				}
+			} else {
+				delete this.newWrapperValue;
+				this.value = this.wrapper.get();
+				return;
+			}
+		}
+
+		var i;
+
+		for ( i = 0; i < len; i += 1 ) {
+			var adaptor = adaptors[i];
+			if ( adaptor.filter( value, keypath, ractive ) ) {
+				this$1.wrapper = adaptor.wrap( ractive, value, keypath, getPrefixer( keypath ) );
+				this$1.wrapperValue = value;
+				this$1.wrapper.__model = this$1; // massive temporary hack to enable array adaptor
+
+				this$1.value = this$1.wrapper.get();
+
+				break;
+			}
+		}
+	};
+
+	Model__proto__.animate = function animate ( from, to, options, interpolator ) {
+		var this$1 = this;
+
+		if ( this.ticker ) { this.ticker.stop(); }
+
+		var fulfilPromise;
+		var promise = new Promise( function (fulfil) { return fulfilPromise = fulfil; } );
+
+		this.ticker = new Ticker({
+			duration: options.duration,
+			easing: options.easing,
+			step: function (t) {
+				var value = interpolator( t );
+				this$1.applyValue( value );
+				if ( options.step ) { options.step( t, value ); }
+			},
+			complete: function () {
+				this$1.applyValue( to );
+				if ( options.complete ) { options.complete( to ); }
+
+				this$1.ticker = null;
+				fulfilPromise( to );
+			}
+		});
+
+		promise.stop = this.ticker.stop;
+		return promise;
+	};
+
+	Model__proto__.applyValue = function applyValue ( value, notify ) {
+		if ( notify === void 0 ) notify = true;
+
+		if ( isEqual( value, this.value ) ) { return; }
+		if ( this.boundValue ) { this.boundValue = null; }
+
+		if ( this.parent.wrapper && this.parent.wrapper.set ) {
+			this.parent.wrapper.set( this.key, value );
+			this.parent.value = this.parent.wrapper.get();
+
+			this.value = this.parent.value[ this.key ];
+			if ( this.wrapper ) { this.newWrapperValue = this.value; }
+			this.adapt();
+		} else if ( this.wrapper ) {
+			this.newWrapperValue = value;
+			this.adapt();
+		} else {
+			var parentValue = this.parent.value || this.parent.createBranch( this.key );
+			if ( isObjectLike( parentValue ) ) {
+				parentValue[ this.key ] = value;
+			} else {
+				warnIfDebug( ("Attempted to set a property of a non-object '" + (this.getKeypath()) + "'") );
+				return;
+			}
+
+			this.value = value;
+			this.adapt();
+		}
+
+		// keep track of array stuff
+		if ( isArray( value ) ) {
+			this.length = value.length;
+			this.isArray = true;
+		} else {
+			this.isArray = false;
+		}
+
+		// notify dependants
+		this.links.forEach( handleChange );
+		this.children.forEach( mark );
+		this.deps.forEach( handleChange );
+
+		if ( notify ) { this.notifyUpstream(); }
+
+		if ( this.parent.isArray ) {
+			if ( this.key === 'length' ) { this.parent.length = value; }
+			else { this.parent.joinKey( 'length' ).mark(); }
+		}
+	};
+
+	Model__proto__.compute = function compute ( key, computed ) {
+		var registry = this.computed || ( this.computed = {} );
+
+		if ( registry[key] ) {
+			registry[key].signature = getComputationSignature( this.root.ractive, key, computed );
+			registry[key].mark();
+		} else {
+			registry[key] = new shared.Computation( this, getComputationSignature( this.root.ractive, key, computed ), key );
+		}
+
+		return registry[key];
+	};
+
+	Model__proto__.createBranch = function createBranch ( key ) {
+		var branch = isNumeric( key ) ? [] : {};
+		this.applyValue( branch, false );
+
+		return branch;
+	};
+
+	Model__proto__.get = function get ( shouldCapture, opts ) {
+		if ( this._link ) { return this._link.get( shouldCapture, opts ); }
+		if ( shouldCapture ) { capture( this ); }
+		// if capturing, this value needs to be unwrapped because it's for external use
+		if ( opts && opts.virtual ) { return this.getVirtual( false ); }
+		return maybeBind( this, ( ( opts && 'unwrap' in opts ) ? opts.unwrap !== false : shouldCapture ) && this.wrapper ? this.wrapperValue : this.value, !opts || opts.shouldBind !== false );
+	};
+
+	Model__proto__.getKeypathModel = function getKeypathModel () {
+		if ( !this.keypathModel ) { this.keypathModel = new KeypathModel( this ); }
+		return this.keypathModel;
+	};
+
+	Model__proto__.joinKey = function joinKey ( key, opts ) {
+		var this$1 = this;
+
+		if ( this._link ) {
+			if ( opts && opts.lastLink !== false && ( key === undefined || key === '' ) ) { return this; }
+			return this._link.joinKey( key );
+		}
+
+		if ( key === undefined || key === '' ) { return this; }
+
+		var child;
+		if ( hasOwn( this.childByKey, key ) ) { child = this.childByKey[ key ]; }
+		else { child = this.computed && this.computed[ key ]; }
+
+		if ( !child ) {
+			var computed;
+			if ( this.isRoot && this.ractive && ( computed = this.ractive.computed[ key ] ) ) {
+				child = this.compute( key, computed );
+			} else if ( !this.isRoot && this.root.ractive ) {
+				var registry = this.root.ractive.computed;
+				for ( var k in registry ) {
+					computed = registry[k];
+					if ( computed.pattern && computed.pattern.test( this$1.getKeypath() + '.' + key ) ) {
+						child = this$1.compute( key, computed );
+					}
+				}
+			}
+		}
+
+		if ( !child ) {
+			child = new Model( this, key );
+			this.children.push( child );
+			this.childByKey[ key ] = child;
+		}
+
+		if (  child._link && ( !opts || opts.lastLink !== false ) ) { return child._link; }
+
+		return child;
+	};
+
+	Model__proto__.mark = function mark$1 ( force ) {
+		if ( this._link ) { return this._link.mark( force ); }
+
+		var old = this.value;
+		var value = this.retrieve();
+
+		if ( force || !isEqual( value, old ) ) {
+			this.value = value;
+			if ( this.boundValue ) { this.boundValue = null; }
+
+			// make sure the wrapper stays in sync
+			if ( old !== value || this.rewrap ) {
+				if ( this.wrapper ) { this.newWrapperValue = value; }
+				this.adapt();
+			}
+
+			// keep track of array stuff
+			if ( isArray( value ) ) {
+				this.length = value.length;
+				this.isArray = true;
+			} else {
+				this.isArray = false;
+			}
+
+			this.children.forEach( force ? markForce : mark );
+			this.links.forEach( marked );
+
+			this.deps.forEach( handleChange );
+		}
+	};
+
+	Model__proto__.merge = function merge ( array, comparator ) {
+		var oldArray = this.value;
+		var newArray = array;
+		if ( oldArray === newArray ) { oldArray = recreateArray( this ); }
+		if ( comparator ) {
+			oldArray = oldArray.map( comparator );
+			newArray = newArray.map( comparator );
+		}
+
+		var oldLength = oldArray.length;
+
+		var usedIndices = {};
+		var firstUnusedIndex = 0;
+
+		var newIndices = oldArray.map( function (item) {
+			var index;
+			var start = firstUnusedIndex;
+
+			do {
+				index = newArray.indexOf( item, start );
+
+				if ( index === -1 ) {
+					return -1;
+				}
+
+				start = index + 1;
+			} while ( ( usedIndices[ index ] === true ) && start < oldLength );
+
+			// keep track of the first unused index, so we don't search
+			// the whole of newArray for each item in oldArray unnecessarily
+			if ( index === firstUnusedIndex ) {
+				firstUnusedIndex += 1;
+			}
+			// allow next instance of next "equal" to be found item
+			usedIndices[ index ] = true;
+			return index;
+		});
+
+		this.parent.value[ this.key ] = array;
+		this.shuffle( newIndices, true );
+	};
+
+	Model__proto__.retrieve = function retrieve () {
+		return this.parent.value ? this.parent.value[ this.key ] : undefined;
+	};
+
+	Model__proto__.set = function set ( value ) {
+		if ( this.ticker ) { this.ticker.stop(); }
+		this.applyValue( value );
+	};
+
+	Model__proto__.shuffle = function shuffle$2 ( newIndices, unsafe ) {
+		shuffle( this, newIndices, false, unsafe );
+	};
+
+	Model__proto__.source = function source () { return this; };
+
+	Model__proto__.teardown = function teardown$3 () {
+		var this$1 = this;
+
+		if ( this._link ) {
+			this._link.teardown();
+			this._link = null;
+		}
+		this.children.forEach( teardown );
+		if ( this.wrapper ) { this.wrapper.teardown(); }
+		if ( this.keypathModel ) { this.keypathModel.teardown(); }
+		if ( this.computed ) { keys( this.computed ).forEach( function (k) { return this$1.computed[k].teardown(); } ); }
+	};
+
+	return Model;
+}(ModelBase));
+
+function recreateArray( model ) {
+	var array = [];
+
+	for ( var i = 0; i < model.length; i++ ) {
+		array[ i ] = (model.childByKey[i] || {}).value;
+	}
+
+	return array;
+}
+
+/* global global */
+var data = {};
+
+var SharedModel = (function (Model) {
+	function SharedModel ( value, name ) {
+		Model.call( this, null, ("@" + name) );
+		this.key = "@" + name;
+		this.value = value;
+		this.isRoot = true;
+		this.root = this;
+		this.adaptors = [];
+	}
+
+	if ( Model ) SharedModel.__proto__ = Model;
+	var SharedModel__proto__ = SharedModel.prototype = Object.create( Model && Model.prototype );
+	SharedModel__proto__.constructor = SharedModel;
+
+	SharedModel__proto__.getKeypath = function getKeypath () {
+		return this.key;
+	};
+
+	SharedModel__proto__.retrieve = function retrieve () { return this.value; };
+
+	return SharedModel;
+}(Model));
+
+var SharedModel$1 = new SharedModel( data, 'shared' );
+
+var GlobalModel = new SharedModel( typeof global !== 'undefined' ? global : window, 'global' );
+
+function resolveReference ( fragment, ref ) {
+	var initialFragment = fragment;
+	// current context ref
+	if ( ref === '.' ) { return fragment.findContext(); }
+
+	// ancestor references
+	if ( ref[0] === '~' ) { return fragment.ractive.viewmodel.joinAll( splitKeypath( ref.slice( 2 ) ) ); }
+
+	// scoped references
+	if ( ref[0] === '.' || ref[0] === '^' ) {
+		var frag = fragment;
+		var parts = ref.split( '/' );
+		var explicitContext = parts[0] === '^^';
+		var context$1 = explicitContext ? null : fragment.findContext();
+
+		// account for the first context hop
+		if ( explicitContext ) { parts.unshift( '^^' ); }
+
+		// walk up the context chain
+		while ( parts[0] === '^^' ) {
+			parts.shift();
+			context$1 = null;
+			while ( frag && !context$1 ) {
+				context$1 = frag.context;
+				frag = frag.parent.component ? frag.parent.component.up : frag.parent;
+			}
+		}
+
+		if ( !context$1 && explicitContext ) {
+			throw new Error( ("Invalid context parent reference ('" + ref + "'). There is not context at that level.") );
+		}
+
+		// walk up the context path
+		while ( parts[0] === '.' || parts[0] === '..' ) {
+			var part = parts.shift();
+
+			if ( part === '..' ) {
+				context$1 = context$1.parent;
+			}
+		}
+
+		ref = parts.join( '/' );
+
+		// special case - `{{.foo}}` means the same as `{{./foo}}`
+		if ( ref[0] === '.' ) { ref = ref.slice( 1 ); }
+		return context$1.joinAll( splitKeypath( ref ) );
+	}
+
+	var keys$$1 = splitKeypath( ref );
+	if ( !keys$$1.length ) { return; }
+	var base = keys$$1.shift();
+
+	// special refs
+	if ( base[0] === '@' ) {
+		// shorthand from outside the template
+		// @this referring to local ractive instance
+		if ( base === '@this' || base === '@' ) {
+			return fragment.ractive.viewmodel.getRactiveModel().joinAll( keys$$1 );
+		}
+
+		// @index or @key referring to the nearest repeating index or key
+		else if ( base === '@index' || base === '@key' ) {
+			if ( keys$$1.length ) { badReference( base ); }
+			var repeater = fragment.findRepeatingFragment();
+			// make sure the found fragment is actually an iteration
+			if ( !repeater.isIteration ) { return; }
+			return repeater.context && repeater.context.getKeyModel( repeater[ ref[1] === 'i' ? 'index' : 'key' ] );
+		}
+
+		// @global referring to window or global
+		else if ( base === '@global' ) {
+			return GlobalModel.joinAll( keys$$1 );
+		}
+
+		// @global referring to window or global
+		else if ( base === '@shared' ) {
+			return SharedModel$1.joinAll( keys$$1 );
+		}
+
+		// @keypath or @rootpath, the current keypath string
+		else if ( base === '@keypath' || base === '@rootpath' ) {
+			var root = ref[1] === 'r' ? fragment.ractive.root : null;
+			var context$2 = fragment.findContext();
+
+			// skip over component roots, which provide no context
+			while ( root && context$2.isRoot && context$2.ractive.component ) {
+				context$2 = context$2.ractive.component.up.findContext();
+			}
+
+			return context$2.getKeypathModel( root );
+		}
+
+		else if ( base === '@context' ) {
+			return new ContextModel( fragment.getContext() );
+		}
+
+		// @context-local data
+		else if ( base === '@local' ) {
+			return fragment.getContext()._data.joinAll( keys$$1 );
+		}
+
+		// @style shared model
+		else if ( base === '@style' ) {
+			return fragment.ractive.constructor._cssModel.joinAll( keys$$1 );
+		}
+
+		// @helpers instance model
+		else if ( base === '@helpers' ) {
+			return fragment.ractive.viewmodel.getHelpers().joinAll( keys$$1 );
+		}
+
+		// nope
+		else {
+			throw new Error( ("Invalid special reference '" + base + "'") );
+		}
+	}
+
+	// helpers
+	if ( base && !keys$$1.length ) {
+		var helpers = fragment.ractive.viewmodel.getHelpers();
+		if ( helpers.has( base ) ) { return helpers.joinKey( base ); }
+	}
+
+	var context = fragment.findContext();
+
+	// check immediate context for a match
+	if ( context.has( base ) ) {
+		return context.joinKey( base ).joinAll( keys$$1 );
+	}
+
+	// walk up the fragment hierarchy looking for a matching ref, alias, or key in a context
+	var createMapping = false;
+	var shouldWarn = fragment.ractive.warnAboutAmbiguity;
+
+	while ( fragment ) {
+		// repeated fragments
+		if ( fragment.isIteration ) {
+			if ( base === fragment.parent.keyRef ) {
+				if ( keys$$1.length ) { badReference( base ); }
+				return fragment.context.getKeyModel( fragment.key );
+			}
+
+			if ( base === fragment.parent.indexRef ) {
+				if ( keys$$1.length ) { badReference( base ); }
+				return fragment.context.getKeyModel( fragment.index );
+			}
+		}
+
+		// alias node or iteration
+		if ( fragment.aliases && hasOwn( fragment.aliases, base ) ) {
+			var model = fragment.aliases[ base ];
+
+			if ( keys$$1.length === 0 ) { return model; }
+			else if ( isFunction( model.joinAll ) ) {
+				return model.joinAll( keys$$1 );
+			}
+		}
+
+		// check fragment context to see if it has the key we need
+		if ( fragment.context && fragment.context.has( base ) ) {
+			// this is an implicit mapping
+			if ( createMapping ) {
+				if ( shouldWarn ) { warnIfDebug( ("'" + ref + "' resolved but is ambiguous and will create a mapping to a parent component.") ); }
+				return context.root.createLink( base, fragment.context.joinKey( base ), base, { implicit: true }).joinAll( keys$$1 );
+			}
+
+			if ( shouldWarn ) { warnIfDebug( ("'" + ref + "' resolved but is ambiguous.") ); }
+			return fragment.context.joinKey( base ).joinAll( keys$$1 );
+		}
+
+		if ( ( fragment.componentParent || ( !fragment.parent && fragment.ractive.component ) ) && !fragment.ractive.isolated ) {
+			// ascend through component boundary
+			fragment = fragment.componentParent || fragment.ractive.component.up;
+			createMapping = true;
+		} else {
+			fragment = fragment.parent;
+		}
+	}
+
+	// if enabled, check the instance for a match
+	var instance = initialFragment.ractive;
+	if ( instance.resolveInstanceMembers && base !== 'data' && base in instance ) {
+		return instance.viewmodel.getRactiveModel().joinKey( base ).joinAll( keys$$1 );
+	}
+
+	if ( shouldWarn ) {
+		warnIfDebug( ("'" + ref + "' is ambiguous and did not resolve.") );
+	}
+
+	// didn't find anything, so go ahead and create the key on the local model
+	return context.joinKey( base ).joinAll( keys$$1 );
+}
+
+function badReference ( key ) {
+	throw new Error( ("An index or key reference (" + key + ") cannot have child properties") );
+}
+
+var ContextModel = function ContextModel ( context ) {
+	this.context = context;
+};
+
+ContextModel.prototype.get = function get () { return this.context; };
+
+var extern = {};
+
+function getRactiveContext ( ractive ) {
+	var assigns = [], len = arguments.length - 1;
+	while ( len-- > 0 ) assigns[ len ] = arguments[ len + 1 ];
+
+	var fragment = ractive.fragment || ractive._fakeFragment || ( ractive._fakeFragment = new FakeFragment( ractive ) );
+	return fragment.getContext.apply( fragment, assigns );
+}
+
+function getContext () {
+	var assigns = [], len = arguments.length;
+	while ( len-- ) assigns[ len ] = arguments[ len ];
+
+	if ( !this.ctx ) { this.ctx = new extern.Context( this ); }
+	assigns.unshift( create( this.ctx ) );
+	return assign.apply( null, assigns );
+}
+
+var FakeFragment = function FakeFragment ( ractive ) {
+	this.ractive = ractive;
+};
+
+FakeFragment.prototype.findContext = function findContext () { return this.ractive.viewmodel; };
+var proto$1 = FakeFragment.prototype;
+proto$1.getContext = getContext;
+proto$1.find = proto$1.findComponent = proto$1.findAll = proto$1.findAllComponents = noop;
+
+function findParentWithContext ( fragment ) {
+	var frag = fragment;
+	while ( frag && !frag.context ) { frag = frag.parent; }
+	if ( !frag ) { return fragment && fragment.ractive.fragment; }
+	else { return frag; }
+}
+
+var keep = false;
+
+function set ( pairs, options ) {
+	var k = keep;
+
+	var deep = options && options.deep;
+	var shuffle = options && options.shuffle;
+	var promise = runloop.start();
+	if ( options && 'keep' in options ) { keep = options.keep; }
+
+	var i = pairs.length;
+	while ( i-- ) {
+		var model = pairs[i][0];
+		var value = pairs[i][1];
+		var keypath = pairs[i][2];
+
+		if ( !model ) {
+			runloop.end();
+			throw new Error( ("Failed to set invalid keypath '" + keypath + "'") );
+		}
+
+		if ( deep ) { deepSet( model, value ); }
+		else if ( shuffle ) {
+			var array = value;
+			var target = model.get();
+			// shuffle target array with itself
+			if ( !array ) { array = target; }
+
+			// if there's not an array there yet, go ahead and set
+			if ( target === undefined ) {
+				model.set( array );
+			} else {
+				if ( !isArray( target ) || !isArray( array ) ) {
+					runloop.end();
+					throw new Error( 'You cannot merge an array with a non-array' );
+				}
+
+				var comparator = getComparator( shuffle );
+				model.merge( array, comparator );
+			}
+		} else { model.set( value ); }
+	}
+
+	runloop.end();
+
+	keep = k;
+
+	return promise;
+}
+
+var star = /\*/;
+function gather ( ractive, keypath, base, isolated ) {
+	if ( !base && ( keypath[0] === '.' || keypath[1] === '^' ) ) {
+		warnIfDebug( "Attempted to set a relative keypath from a non-relative context. You can use a context object to set relative keypaths." );
+		return [];
+	}
+
+	var keys$$1 = splitKeypath( keypath );
+	var model = base || ractive.viewmodel;
+
+	if ( star.test( keypath ) ) {
+		return model.findMatches( keys$$1 );
+	} else {
+		if ( model === ractive.viewmodel ) {
+			// allow implicit mappings
+			if ( ractive.component && !ractive.isolated && !model.has( keys$$1[0] ) && keypath[0] !== '@' && keypath[0] && !isolated ) {
+				return [ resolveReference( ractive.fragment || new FakeFragment( ractive ), keypath ) ];
+			} else {
+				return [ model.joinAll( keys$$1 ) ];
+			}
+		} else {
+			return [ model.joinAll( keys$$1 ) ];
+		}
+	}
+}
+
+function build ( ractive, keypath, value, isolated ) {
+	var sets = [];
+
+	// set multiple keypaths in one go
+	if ( isObject( keypath ) ) {
+		var loop = function ( k ) {
+			if ( hasOwn( keypath, k ) ) {
+				sets.push.apply( sets, gather( ractive, k, null, isolated ).map( function (m) { return [ m, keypath[k], k ]; } ) );
+			}
+		};
+
+		for ( var k in keypath ) loop( k );
+
+	}
+	// set a single keypath
+	else {
+		sets.push.apply( sets, gather( ractive, keypath, null, isolated ).map( function (m) { return [ m, value, keypath ]; } ) );
+	}
+
+	return sets;
+}
+
+var deepOpts = { virtual: false };
+function deepSet( model, value ) {
+	var dest = model.get( false, deepOpts );
+
+	// if dest doesn't exist, just set it
+	if ( dest == null || !isObjectType( value ) ) { return model.set( value ); }
+	if ( !isObjectType( dest ) ) { return model.set( value ); }
+
+	for ( var k in value ) {
+		if ( hasOwn( value, k ) ) {
+			deepSet( model.joinKey( k ), value[k] );
+		}
+	}
+}
+
+var comparators = {};
+function getComparator ( option ) {
+	if ( option === true ) { return null; } // use existing arrays
+	if ( isFunction( option ) ) { return option; }
+
+	if ( isString( option ) ) {
+		return comparators[ option ] || ( comparators[ option ] = function (thing) { return thing[ option ]; } );
+	}
+
+	throw new Error( 'If supplied, options.compare must be a string, function, or true' ); // TODO link to docs
+}
+
+var errorMessage = 'Cannot add to a non-numeric value';
+
+function add ( ractive, keypath, d, options ) {
+	if ( !isString( keypath ) || !isNumeric( d ) ) {
+		throw new Error( 'Bad arguments' );
+	}
+
+	var sets = build( ractive, keypath, d, options && options.isolated );
+
+	return set( sets.map( function (pair) {
+		var model = pair[0];
+		var add = pair[1];
+		var value = model.get();
+		if ( !isNumeric( add ) || !isNumeric( value ) ) { throw new Error( errorMessage ); }
+		return [ model, value + add ];
+	}));
+}
+
+function Ractive$add ( keypath, d, options ) {
+	var num = isNumber( d ) ? d : 1;
+	var opts = isObjectType( d ) ? d : options;
+	return add( this, keypath, num, opts );
+}
+
+function immediate ( value ) {
+	var result = Promise.resolve( value );
+	defineProperty( result, 'stop', { value: noop });
+	return result;
+}
+
+var linear = easing.linear;
+
+function getOptions ( options, instance ) {
+	options = options || {};
+
+	var easing$$1;
+	if ( options.easing ) {
+		easing$$1 = isFunction( options.easing ) ?
+			options.easing :
+			instance.easing[ options.easing ];
+	}
+
+	return {
+		easing: easing$$1 || linear,
+		duration: 'duration' in options ? options.duration : 400,
+		complete: options.complete || noop,
+		step: options.step || noop,
+		interpolator: options.interpolator
+	};
+}
+
+function animate ( ractive, model, to, options ) {
+	options = getOptions( options, ractive );
+	var from = model.get();
+
+	// don't bother animating values that stay the same
+	if ( isEqual( from, to ) ) {
+		options.complete( options.to );
+		return immediate( to );
+	}
+
+	var interpolator = interpolate( from, to, ractive, options.interpolator );
+
+	// if we can't interpolate the value, set it immediately
+	if ( !interpolator ) {
+		runloop.start();
+		model.set( to );
+		runloop.end();
+
+		return immediate( to );
+	}
+
+	return model.animate( from, to, options, interpolator );
+}
+
+function Ractive$animate ( keypath, to, options ) {
+	if ( isObjectType( keypath ) ) {
+		var keys$$1 = keys( keypath );
+
+		throw new Error( ("ractive.animate(...) no longer supports objects. Instead of ractive.animate({\n  " + (keys$$1.map( function (key) { return ("'" + key + "': " + (keypath[ key ])); } ).join( '\n  ' )) + "\n}, {...}), do\n\n" + (keys$$1.map( function (key) { return ("ractive.animate('" + key + "', " + (keypath[ key ]) + ", {...});"); } ).join( '\n' )) + "\n") );
+	}
+
+
+	return animate( this, this.viewmodel.joinAll( splitKeypath( keypath ) ), to, options );
+}
+
+function enqueue ( ractive, event ) {
+	if ( ractive.event ) {
+		ractive._eventQueue.push( ractive.event );
+	}
+
+	ractive.event = event;
+}
+
+function dequeue ( ractive ) {
+	if ( ractive._eventQueue.length ) {
+		ractive.event = ractive._eventQueue.pop();
+	} else {
+		ractive.event = null;
+	}
+}
+
+var initStars = {};
+var bubbleStars = {};
+
+// cartesian product of name parts and stars
+// adjusted appropriately for special cases
+function variants ( name, initial ) {
+	var map = initial ? initStars : bubbleStars;
+	if ( map[ name ] ) { return map[ name ]; }
+
+	var parts = name.split( '.' );
+	var result = [];
+	var base = false;
+
+	// initial events the implicit namespace of 'this'
+	if ( initial ) {
+		parts.unshift( 'this' );
+		base = true;
+	}
+
+	// use max - 1 bits as a bitmap to pick a part or a *
+	// need to skip the full star case if the namespace is synthetic
+	var max = Math.pow( 2, parts.length ) - ( initial ? 1 : 0 );
+	for ( var i = 0; i < max; i++ ) {
+		var join = [];
+		for ( var j = 0; j < parts.length; j++ ) {
+			join.push( 1 & ( i >> j ) ? '*' : parts[j] );
+		}
+		result.unshift( join.join( '.' ) );
+	}
+
+	if ( base ) {
+		// include non-this-namespaced versions
+		if ( parts.length > 2 ) {
+			result.push.apply( result, variants( name, false ) );
+		} else {
+			result.push( '*' );
+			result.push( name );
+		}
+	}
+
+	map[ name ] = result;
+	return result;
+}
+
+function fireEvent ( ractive, eventName, context, args ) {
+	if ( args === void 0 ) args = [];
+
+	if ( !eventName ) { return; }
+
+	context.name = eventName;
+	args.unshift( context );
+
+	var eventNames = ractive._nsSubs ? variants( eventName, true ) : [ '*', eventName ];
+
+	return fireEventAs( ractive, eventNames, context, args, true );
+}
+
+function fireEventAs  ( ractive, eventNames, context, args, initialFire ) {
+	if ( initialFire === void 0 ) initialFire = false;
+
+	var bubble = true;
+
+	if ( initialFire || ractive._nsSubs ) {
+		enqueue( ractive, context );
+
+		var i = eventNames.length;
+		while ( i-- ) {
+			if ( eventNames[ i ] in ractive._subs ) {
+				bubble = notifySubscribers( ractive, ractive._subs[ eventNames[ i ] ], context, args ) && bubble;
+			}
+		}
+
+		dequeue( ractive );
+	}
+
+	if ( ractive.parent && bubble ) {
+		if ( initialFire && ractive.component ) {
+			var fullName = ractive.component.name + '.' + eventNames[ eventNames.length - 1 ];
+			eventNames = variants( fullName, false );
+
+			if ( context && !context.component ) {
+				context.component = ractive;
+			}
+		}
+
+		bubble = fireEventAs( ractive.parent, eventNames, context, args );
+	}
+
+	return bubble;
+}
+
+function notifySubscribers ( ractive, subscribers, context, args ) {
+	var originalEvent = null;
+	var stopEvent = false;
+
+	// subscribers can be modified inflight, e.g. "once" functionality
+	// so we need to copy to make sure everyone gets called
+	subscribers = subscribers.slice();
+
+	for ( var i = 0, len = subscribers.length; i < len; i += 1 ) {
+		if ( !subscribers[ i ].off && subscribers[ i ].handler.apply( ractive, args ) === false ) {
+			stopEvent = true;
+		}
+	}
+
+	if ( context && stopEvent && ( originalEvent = context.event ) ) {
+		originalEvent.preventDefault && originalEvent.preventDefault();
+		originalEvent.stopPropagation && originalEvent.stopPropagation();
+	}
+
+	return !stopEvent;
+}
+
+var Hook = function Hook ( event ) {
+	this.event = event;
+	this.method = 'on' + event;
+};
+
+Hook.prototype.fire = function fire ( ractive, arg ) {
+	var context = getRactiveContext( ractive );
+
+	if ( ractive[ this.method ] ) {
+		arg ? ractive[ this.method ]( context, arg ) : ractive[ this.method ]( context );
+	}
+
+	fireEvent( ractive, this.event, context, arg ? [ arg, ractive ] : [ ractive ] );
+};
+
+function findAnchors ( fragment, name ) {
+	if ( name === void 0 ) name = null;
+
+	var res = [];
+
+	findAnchorsIn( fragment, name, res );
+
+	return res;
+}
+
+function findAnchorsIn ( item, name, result ) {
+	if ( item.isAnchor ) {
+		if ( !name || item.name === name ) {
+			result.push( item );
+		}
+	} else if ( item.items ) {
+		item.items.forEach( function (i) { return findAnchorsIn( i, name, result ); } );
+	} else if ( item.iterations ) {
+		item.iterations.forEach( function (i) { return findAnchorsIn( i, name, result ); } );
+	} else if ( item.fragment && !item.component ) {
+		findAnchorsIn( item.fragment, name, result );
+	}
+}
+
+function updateAnchors ( instance, name ) {
+	if ( name === void 0 ) name = null;
+
+	var anchors = findAnchors( instance.fragment, name );
+	var idxs = {};
+	var children = instance._children.byName;
+
+	anchors.forEach( function (a) {
+		var name = a.name;
+		if ( !( name in idxs ) ) { idxs[name] = 0; }
+		var idx = idxs[name];
+		var child = ( children[name] || [] )[idx];
+
+		if ( child && child.lastBound !== a ) {
+			if ( child.lastBound ) { child.lastBound.removeChild( child ); }
+			a.addChild( child );
+		}
+
+		idxs[name]++;
 	});
+}
+
+function unrenderChild ( meta ) {
+	if ( meta.instance.fragment.rendered ) {
+		meta.shouldDestroy = true;
+		meta.instance.unrender();
+	}
+	meta.instance.el = null;
+}
+
+var attachHook = new Hook( 'attachchild' );
+
+function attachChild ( child, options ) {
+	if ( options === void 0 ) options = {};
+
+	var children = this._children;
+	var idx;
+
+	if ( child.parent && child.parent !== this ) { throw new Error( ("Instance " + (child._guid) + " is already attached to a different instance " + (child.parent._guid) + ". Please detach it from the other instance using detachChild first.") ); }
+	else if ( child.parent ) { throw new Error( ("Instance " + (child._guid) + " is already attached to this instance.") ); }
+
+	var meta = {
+		instance: child,
+		ractive: this,
+		name: options.name || child.constructor.name || 'Ractive',
+		target: options.target || false,
+		bubble: bubble,
+		findNextNode: findNextNode
+	};
+	meta.nameOption = options.name;
+
+	// child is managing itself
+	if ( !meta.target ) {
+		meta.up = this.fragment;
+		meta.external = true;
+	} else {
+		var list;
+		if ( !( list = children.byName[ meta.target ] ) ) {
+			list = [];
+			this.set( ("@this.children.byName." + (meta.target)), list );
+		}
+		idx = options.prepend ? 0 : options.insertAt !== undefined ? options.insertAt : list.length;
+	}
+
+	child.set({
+		'@this.parent': this,
+		'@this.root': this.root
+	});
+	child.component = meta;
+	children.push( meta );
+
+	attachHook.fire( child );
+
+	var promise = runloop.start();
+
+	if ( meta.target ) {
+		unrenderChild( meta );
+		this.splice( ("@this.children.byName." + (meta.target)), idx, 0, meta );
+		updateAnchors( this, meta.target );
+	} else {
+		if ( !child.isolated ) { child.viewmodel.attached( this.fragment ); }
+	}
+
+	runloop.end();
+
+	promise.ractive = child;
+	return promise.then( function () { return child; } );
+}
+
+function bubble () { runloop.addFragment( this.instance.fragment ); }
+
+function findNextNode () {
+	if ( this.anchor ) { return this.anchor.findNextNode(); }
+}
+
+function compute ( path, computed ) {
+	this.computed[ path ] = computed;
+	if ( isString( computed ) || isFunction( computed ) ) { computed = this.computed[ path ] = { get: computed }; }
+
+	var keys = splitKeypath( path );
+	if ( !~path.indexOf( '*' ) ) {
+		var last = keys.pop();
+		return this.viewmodel.joinAll( keys ).compute( last, computed );
+	} else {
+		computed.pattern = new RegExp( '^' + keys.map( function (k) { return k.replace( /\*\*/g, '(.+)' ).replace( /\*/g, '((?:\\.|[^\\.])+)' ); } ).join( '\\.' ) + '$' );
+	}
+}
+
+function Ractive$compute ( path, computed ) {
+	var promise = runloop.start();
+	var comp = compute.call( this, path, computed );
+
+	if ( comp ) {
+		var keys = splitKeypath( path );
+		if ( keys.length === 1 && !comp.isReadonly ) {
+			comp.set( this.viewmodel.value[ keys[0] ] );
+		}
+
+		var first = keys.reduce( function ( a, c ) { return a && a.childByKey[c]; }, this.viewmodel );
+		if ( first ) {
+			first.rebind( comp, first, false );
+			if ( first.parent ) { delete first.parent.childByKey[ first.key ]; }
+			fireShuffleTasks();
+		}
+	}
+
+	runloop.end();
+
+	return promise;
+}
+
+var detachHook = new Hook( 'detach' );
+
+function Ractive$detach () {
+	if ( this.isDetached ) {
+		return this.el;
+	}
+
+	if ( this.el ) {
+		removeFromArray( this.el.__ractive_instances__, this );
+	}
+
+	this.el = this.fragment.detach();
+	this.isDetached = true;
+
+	detachHook.fire( this );
+	return this.el;
+}
+
+var detachHook$1 = new Hook( 'detachchild' );
+
+function detachChild ( child ) {
+	var children = this._children;
+	var meta, index;
+
+	var i = children.length;
+	while ( i-- ) {
+		if ( children[i].instance === child ) {
+			index = i;
+			meta = children[i];
+			break;
+		}
+	}
+
+	if ( !meta || child.parent !== this ) { throw new Error( ("Instance " + (child._guid) + " is not attached to this instance.") ); }
+
+	var promise = runloop.start();
+
+	if ( meta.anchor ) { meta.anchor.removeChild( meta ); }
+	if ( !child.isolated ) { child.viewmodel.detached(); }
+
+	runloop.end();
+
+	children.splice( index, 1 );
+	if ( meta.target ) {
+		this.splice( ("@this.children.byName." + (meta.target)), children.byName[ meta.target ].indexOf(meta), 1 );
+		updateAnchors( this, meta.target );
+	}
+	child.set({
+		'@this.parent': undefined,
+		'@this.root': child
+	});
+	child.component = null;
+
+	detachHook$1.fire( child );
+
+	promise.ractive = child;
+	return promise.then( function () { return child; } );
+}
+
+function Ractive$find ( selector, options ) {
+	var this$1 = this;
+	if ( options === void 0 ) options = {};
+
+	if ( !this.el ) { throw new Error( ("Cannot call ractive.find('" + selector + "') unless instance is rendered to the DOM") ); }
+
+	var node = this.fragment.find( selector, options );
+	if ( node ) { return node; }
+
+	if ( options.remote ) {
+		for ( var i = 0; i < this._children.length; i++ ) {
+			if ( !this$1._children[i].instance.fragment.rendered ) { continue; }
+			node = this$1._children[i].instance.find( selector, options );
+			if ( node ) { return node; }
+		}
+	}
+}
+
+function Ractive$findAll ( selector, options ) {
+	if ( options === void 0 ) options = {};
+
+	if ( !this.el ) { throw new Error( ("Cannot call ractive.findAll('" + selector + "', ...) unless instance is rendered to the DOM") ); }
+
+	if ( !isArray( options.result ) ) { options.result = []; }
+
+	this.fragment.findAll( selector, options );
+
+	if ( options.remote ) {
+		// seach non-fragment children
+		this._children.forEach( function (c) {
+			if ( !c.target && c.instance.fragment && c.instance.fragment.rendered ) {
+				c.instance.findAll( selector, options );
+			}
+		});
+	}
+
+	return options.result;
+}
+
+function Ractive$findAllComponents ( selector, options ) {
+	if ( !options && isObjectType( selector ) ) {
+		options = selector;
+		selector = '';
+	}
+
+	options = options || {};
+
+	if ( !isArray( options.result ) ) { options.result = []; }
+
+	this.fragment.findAllComponents( selector, options );
+
+	if ( options.remote ) {
+		// search non-fragment children
+		this._children.forEach( function (c) {
+			if ( !c.target && c.instance.fragment && c.instance.fragment.rendered ) {
+				if ( !selector || c.name === selector ) {
+					options.result.push( c.instance );
+				}
+
+				c.instance.findAllComponents( selector, options );
+			}
+		});
+	}
+
+	return options.result;
+}
+
+function Ractive$findComponent ( selector, options ) {
+	var this$1 = this;
+	if ( options === void 0 ) options = {};
+
+	if ( isObjectType( selector ) ) {
+		options = selector;
+		selector = '';
+	}
+
+	var child = this.fragment.findComponent( selector, options );
+	if ( child ) { return child; }
+
+	if ( options.remote ) {
+		if ( !selector && this._children.length ) { return this._children[0].instance; }
+		for ( var i = 0; i < this._children.length; i++ ) {
+			// skip children that are or should be in an anchor
+			if ( this$1._children[i].target ) { continue; }
+			if ( this$1._children[i].name === selector ) { return this$1._children[i].instance; }
+			child = this$1._children[i].instance.findComponent( selector, options );
+			if ( child ) { return child; }
+		}
+	}
+}
+
+function Ractive$findContainer ( selector ) {
+	if ( this.container ) {
+		if ( this.container.component && this.container.component.name === selector ) {
+			return this.container;
+		} else {
+			return this.container.findContainer( selector );
+		}
+	}
+
+	return null;
+}
+
+function Ractive$findParent ( selector ) {
+
+	if ( this.parent ) {
+		if ( this.parent.component && this.parent.component.name === selector ) {
+			return this.parent;
+		} else {
+			return this.parent.findParent ( selector );
+		}
+	}
+
+	return null;
+}
+
+function findElement( start, orComponent, name ) {
+	if ( orComponent === void 0 ) orComponent = true;
+
+	while ( start && ( start.type !== ELEMENT || ( name && start.name !== name ) ) && ( !orComponent || ( start.type !== COMPONENT && start.type !== ANCHOR ) ) ) {
+		// start is a fragment - look at the owner
+		if ( start.owner ) { start = start.owner; }
+		// start is a component or yielder - look at the container
+		else if ( start.component ) { start = start.containerFragment || start.component.up; }
+		// start is an item - look at the parent
+		else if ( start.parent ) { start = start.parent; }
+		// start is an item without a parent - look at the parent fragment
+		else if ( start.up ) { start = start.up; }
+
+		else { start = undefined; }
+	}
+
+	return start;
+}
+
+// This function takes an array, the name of a mutator method, and the
+// arguments to call that mutator method with, and returns an array that
+// maps the old indices to their new indices.
+
+// So if you had something like this...
+//
+//     array = [ 'a', 'b', 'c', 'd' ];
+//     array.push( 'e' );
+//
+// ...you'd get `[ 0, 1, 2, 3 ]` - in other words, none of the old indices
+// have changed. If you then did this...
+//
+//     array.unshift( 'z' );
+//
+// ...the indices would be `[ 1, 2, 3, 4, 5 ]` - every item has been moved
+// one higher to make room for the 'z'. If you removed an item, the new index
+// would be -1...
+//
+//     array.splice( 2, 2 );
+//
+// ...this would result in [ 0, 1, -1, -1, 2, 3 ].
+//
+// This information is used to enable fast, non-destructive shuffling of list
+// sections when you do e.g. `ractive.splice( 'items', 2, 2 );
+
+function getNewIndices ( length, methodName, args ) {
+	var newIndices = [];
+
+	var spliceArguments = getSpliceEquivalent( length, methodName, args );
+
+	if ( !spliceArguments ) {
+		return null; // TODO support reverse and sort?
+	}
+
+	var balance = ( spliceArguments.length - 2 ) - spliceArguments[1];
+
+	var removeStart = Math.min( length, spliceArguments[0] );
+	var removeEnd = removeStart + spliceArguments[1];
+	newIndices.startIndex = removeStart;
+
+	var i;
+	for ( i = 0; i < removeStart; i += 1 ) {
+		newIndices.push( i );
+	}
+
+	for ( ; i < removeEnd; i += 1 ) {
+		newIndices.push( -1 );
+	}
+
+	for ( ; i < length; i += 1 ) {
+		newIndices.push( i + balance );
+	}
+
+	// there is a net shift for the rest of the array starting with index + balance
+	if ( balance !== 0 ) {
+		newIndices.touchedFrom = spliceArguments[0];
+	} else {
+		newIndices.touchedFrom = length;
+	}
+
+	return newIndices;
+}
+
+
+// The pop, push, shift an unshift methods can all be represented
+// as an equivalent splice
+function getSpliceEquivalent ( length, methodName, args ) {
+	switch ( methodName ) {
+		case 'splice':
+			if ( args[0] !== undefined && args[0] < 0 ) {
+				args[0] = length + Math.max( args[0], -length );
+			}
+
+			if ( args[0] === undefined ) { args[0] = 0; }
+
+			while ( args.length < 2 ) {
+				args.push( length - args[0] );
+			}
+
+			if ( !isNumber( args[1] ) ) {
+				args[1] = length - args[0];
+			}
+
+			// ensure we only remove elements that exist
+			args[1] = Math.min( args[1], length - args[0] );
+
+			return args;
+
+		case 'sort':
+		case 'reverse':
+			return null;
+
+		case 'pop':
+			if ( length ) {
+				return [ length - 1, 1 ];
+			}
+			return [ 0, 0 ];
+
+		case 'push':
+			return [ length, 0 ].concat( args );
+
+		case 'shift':
+			return [ 0, length ? 1 : 0 ];
+
+		case 'unshift':
+			return [ 0, 0 ].concat( args );
+	}
+}
+
+var arrayProto = Array.prototype;
+
+var makeArrayMethod = function ( methodName ) {
+	function path ( keypath ) {
+		var args = [], len = arguments.length - 1;
+		while ( len-- > 0 ) args[ len ] = arguments[ len + 1 ];
+
+		return model( this.viewmodel.joinAll( splitKeypath( keypath ) ), args );
+	}
+
+	function model ( mdl, args ) {
+		var array = mdl.get();
+
+		if ( !isArray( array ) ) {
+			if ( array === undefined ) {
+				array = [];
+				var result$1 = arrayProto[ methodName ].apply( array, args );
+				var promise$1 = runloop.start().then( function () { return result$1; } );
+				mdl.set( array );
+				runloop.end();
+				return promise$1;
+			} else {
+				throw new Error( ("shuffle array method " + methodName + " called on non-array at " + (mdl.getKeypath())) );
+			}
+		}
+
+		var newIndices = getNewIndices( array.length, methodName, args );
+		var result = arrayProto[ methodName ].apply( array, args );
+
+		var promise = runloop.start().then( function () { return result; } );
+		promise.result = result;
+
+		if ( newIndices ) {
+			if ( mdl.shuffle ) {
+				mdl.shuffle( newIndices );
+			} else { // it's a computation, which don't have a shuffle, so just invalidate
+				mdl.mark();
+			}
+		} else {
+			mdl.set( result );
+		}
+
+		runloop.end();
+
+		return promise;
+	}
+
+	return { path: path, model: model };
+};
+
+var updateHook = new Hook( 'update' );
+
+function update$1 ( ractive, model, options ) {
+	// if the parent is wrapped, the adaptor will need to be updated before
+	// updating on this keypath
+	if ( model.parent && model.parent.wrapper ) {
+		model.parent.adapt();
+	}
+
+	var promise = runloop.start();
+
+	model.mark( options && options.force );
+
+	// notify upstream of changes
+	model.notifyUpstream();
+
+	runloop.end();
+
+	updateHook.fire( ractive, model );
+
+	return promise;
+}
+
+function Ractive$update ( keypath, options ) {
+	var opts, path;
+
+	if ( isString( keypath ) ) {
+		path = splitKeypath( keypath );
+		opts = options;
+	} else {
+		opts = keypath;
+	}
+
+	return update$1( this, path ? this.viewmodel.joinAll( path ) : this.viewmodel, opts );
+}
+
+var modelPush = makeArrayMethod( 'push' ).model;
+var modelPop = makeArrayMethod( 'pop' ).model;
+var modelShift = makeArrayMethod( 'shift' ).model;
+var modelUnshift = makeArrayMethod( 'unshift' ).model;
+var modelSort = makeArrayMethod( 'sort' ).model;
+var modelSplice = makeArrayMethod( 'splice' ).model;
+var modelReverse = makeArrayMethod( 'reverse' ).model;
+
+var ContextData = (function (Model) {
+	function ContextData ( options ) {
+		Model.call( this, null, null );
+
+		this.isRoot = true;
+		this.root = this;
+		this.value = {};
+		this.ractive = options.ractive;
+		this.adaptors = [];
+		this.context = options.context;
+	}
+
+	if ( Model ) ContextData.__proto__ = Model;
+	var ContextData__proto__ = ContextData.prototype = Object.create( Model && Model.prototype );
+	ContextData__proto__.constructor = ContextData;
+
+	ContextData__proto__.getKeypath = function getKeypath () {
+		return '@context.data';
+	};
+
+	return ContextData;
+}(Model));
+
+var Context = function Context ( fragment, element ) {
+	this.fragment = fragment;
+	this.element = element || findElement( fragment );
+	this.node = this.element && this.element.node;
+	this.ractive = fragment.ractive;
+	this.root = this;
+};
+var Context__proto__ = Context.prototype;
+
+var prototypeAccessors = { decorators: {},_data: {} };
+
+prototypeAccessors.decorators.get = function () {
+	var items = {};
+	if ( !this.element ) { return items; }
+	this.element.decorators.forEach( function (d) { return items[ d.name ] = d.handle; } );
+	return items;
+};
+
+prototypeAccessors._data.get = function () {
+	return this.model || ( this.root.model = new ContextData({ ractive: this.ractive, context: this.root }) );
+};
+
+// the usual mutation suspects
+Context__proto__.add = function add ( keypath, d, options ) {
+	var num = isNumber( d ) ? +d : 1;
+	var opts = isObjectType( d ) ? d : options;
+	return set( build$1( this, keypath, num ).map( function (pair) {
+		var model = pair[0];
+			var val = pair[1];
+		var value = model.get();
+		if ( !isNumeric( val ) || !isNumeric( value ) ) { throw new Error( 'Cannot add non-numeric value' ); }
+		return [ model, value + val ];
+	}), opts );
+};
+
+Context__proto__.animate = function animate$1 ( keypath, value, options ) {
+	var model = findModel( this, keypath ).model;
+	return animate( this.ractive, model, value, options );
+};
+
+// get relative keypaths and values
+Context__proto__.get = function get ( keypath ) {
+	if ( !keypath ) { return this.fragment.findContext().get( true ); }
+
+	var ref = findModel( this, keypath );
+		var model = ref.model;
+
+	return model ? model.get( true ) : undefined;
+};
+
+Context__proto__.getParent = function getParent ( component ) {
+	var fragment = this.fragment;
+
+	if ( fragment.context ) { fragment = findParentWithContext( fragment.parent || ( component && fragment.componentParent ) ); }
+	else {
+		fragment = findParentWithContext( fragment.parent || ( component && fragment.componentParent ) );
+		if ( fragment ) { fragment = findParentWithContext( fragment.parent || ( component && fragment.componentParent ) ); }
+	}
+
+	if ( !fragment || fragment === this.fragment ) { return; }
+	else { return fragment.getContext(); }
+};
+
+Context__proto__.hasListener = function hasListener ( name, bubble ) {
+	var el = this.element || this.fragment.owner;
+
+	do {
+		if ( el.template.t === ELEMENT ) {
+			if ( findEvent( el, name ) ) { return true; }
+		}
+		el = el.up && el.up.owner;
+		if ( el && el.component ) { el = el.component; }
+	} while ( el && bubble );
+};
+
+Context__proto__.link = function link ( source, dest ) {
+	var there = findModel( this, source ).model;
+	var here = findModel( this, dest ).model;
+	var promise = runloop.start();
+	here.link( there, source );
+	runloop.end();
+	return promise;
+};
+
+Context__proto__.listen = function listen ( event, handler ) {
+	var el = this.element;
+	el.on( event, handler );
+	return {
+		cancel: function cancel () { el.off( event, handler ); }
+	};
+};
+
+Context__proto__.observe = function observe ( keypath, callback, options ) {
+		if ( options === void 0 ) options = {};
+
+	if ( isObject( keypath ) ) { options = callback || {}; }
+	options.fragment = this.fragment;
+	return this.ractive.observe( keypath, callback, options );
+};
+
+Context__proto__.observeOnce = function observeOnce ( keypath, callback, options ) {
+		if ( options === void 0 ) options = {};
+
+	if ( isObject( keypath ) ) { options = callback || {}; }
+	options.fragment = this.fragment;
+	return this.ractive.observeOnce( keypath, callback, options );
+};
+
+Context__proto__.pop = function pop ( keypath ) {
+	return modelPop( findModel( this, keypath ).model, [] );
+};
+
+Context__proto__.push = function push ( keypath ) {
+		var values = [], len = arguments.length - 1;
+		while ( len-- > 0 ) values[ len ] = arguments[ len + 1 ];
+
+	return modelPush( findModel( this, keypath ).model, values );
+};
+
+Context__proto__.raise = function raise ( name, event ) {
+		var args = [], len = arguments.length - 2;
+		while ( len-- > 0 ) args[ len ] = arguments[ len + 2 ];
+
+	var el = this.element;
+	var ev;
+
+	while ( el ) {
+		if ( el.component ) { el = el.component; }
+		ev = findEvent( el, name );
+		if ( ev ) {
+			return ev.fire(
+				ev.element.getContext(
+					event || {},
+					event && !( 'original' in event ) ? { original: {} } : {}
+				),
+				args
+			);
+		}
+
+		el = el.up && el.up.owner;
+	}
+};
+
+Context__proto__.readLink = function readLink ( keypath, options ) {
+	return this.ractive.readLink( this.resolve( keypath ), options );
+};
+
+Context__proto__.resolve = function resolve ( path, ractive ) {
+	var ref = findModel( this, path );
+		var model = ref.model;
+		var instance = ref.instance;
+	return model ? model.getKeypath( ractive || instance ) : path;
+};
+
+Context__proto__.reverse = function reverse ( keypath ) {
+	return modelReverse( findModel( this, keypath ).model, [] );
+};
+
+Context__proto__.set = function set$2 ( keypath, value, options ) {
+	return set( build$1( this, keypath, value ), options );
+};
+
+Context__proto__.shift = function shift ( keypath ) {
+	return modelShift( findModel( this, keypath ).model, [] );
+};
+
+Context__proto__.splice = function splice ( keypath, index, drop ) {
+		var add = [], len = arguments.length - 3;
+		while ( len-- > 0 ) add[ len ] = arguments[ len + 3 ];
+
+	add.unshift( index, drop );
+	return modelSplice( findModel( this, keypath ).model, add );
+};
+
+Context__proto__.sort = function sort ( keypath ) {
+	return modelSort( findModel( this, keypath ).model, [] );
+};
+
+Context__proto__.subtract = function subtract ( keypath, d, options ) {
+	var num = isNumber( d ) ? d : 1;
+	var opts = isObjectType( d ) ? d : options;
+	return set( build$1( this, keypath, num ).map( function (pair) {
+		var model = pair[0];
+			var val = pair[1];
+		var value = model.get();
+		if ( !isNumeric( val ) || !isNumeric( value ) ) { throw new Error( 'Cannot add non-numeric value' ); }
+		return [ model, value - val ];
+	}), opts );
+};
+
+Context__proto__.toggle = function toggle ( keypath, options ) {
+	var ref = findModel( this, keypath );
+		var model = ref.model;
+	return set( [ [ model, !model.get() ] ], options );
+};
+
+Context__proto__.unlink = function unlink ( dest ) {
+	var here = findModel( this, dest ).model;
+	var promise = runloop.start();
+	if ( here.owner && here.owner._link ) { here.owner.unlink(); }
+	runloop.end();
+	return promise;
+};
+
+Context__proto__.unlisten = function unlisten ( event, handler ) {
+	this.element.off( event, handler );
+};
+
+Context__proto__.unshift = function unshift ( keypath ) {
+		var add = [], len = arguments.length - 1;
+		while ( len-- > 0 ) add[ len ] = arguments[ len + 1 ];
+
+	return modelUnshift( findModel( this, keypath ).model, add );
+};
+
+Context__proto__.update = function update ( keypath, options ) {
+	return update$1( this.ractive, findModel( this, keypath ).model, options );
+};
+
+Context__proto__.updateModel = function updateModel ( keypath, cascade ) {
+	var ref = findModel( this, keypath );
+		var model = ref.model;
+	var promise = runloop.start();
+	model.updateFromBindings( cascade );
+	runloop.end();
+	return promise;
+};
+
+// two-way binding related helpers
+Context__proto__.isBound = function isBound () {
+	var ref = this.getBindingModel( this );
+		var model = ref.model;
+	return !!model;
+};
+
+Context__proto__.getBindingPath = function getBindingPath ( ractive ) {
+	var ref = this.getBindingModel( this );
+		var model = ref.model;
+		var instance = ref.instance;
+	if ( model ) { return model.getKeypath( ractive || instance ); }
+};
+
+Context__proto__.getBinding = function getBinding () {
+	var ref = this.getBindingModel( this );
+		var model = ref.model;
+	if ( model ) { return model.get( true ); }
+};
+
+Context__proto__.getBindingModel = function getBindingModel ( ctx ) {
+	var el = ctx.element;
+	return { model: el.binding && el.binding.model, instance: el.up.ractive };
+};
+
+Context__proto__.setBinding = function setBinding ( value ) {
+	var ref = this.getBindingModel( this );
+		var model = ref.model;
+	return set( [ [ model, value ] ] );
+};
+
+Object.defineProperties( Context__proto__, prototypeAccessors );
+
+Context.forRactive = getRactiveContext;
+// circular deps are fun
+extern.Context = Context;
+
+// TODO: at some point perhaps this could support relative * keypaths?
+function build$1 ( ctx, keypath, value ) {
+	var sets = [];
+
+	// set multiple keypaths in one go
+	if ( isObject( keypath ) ) {
+		for ( var k in keypath ) {
+			if ( hasOwn( keypath, k ) ) {
+				sets.push( [ findModel( ctx, k ).model, keypath[k] ] );
+			}
+		}
+
+	}
+	// set a single keypath
+	else {
+		sets.push( [ findModel( ctx, keypath ).model, value ] );
+	}
+
+	return sets;
+}
+
+function findModel ( ctx, path ) {
+	var frag = ctx.fragment;
+
+	if ( !isString( path ) ) {
+		return { model: frag.findContext(), instance: path };
+	}
+
+	return { model: resolveReference( frag, path ), instance: frag.ractive };
+}
+
+function findEvent( el, name ) {
+	return el.attributes && el.attributes.find( function (a) { return a.template.t === EVENT && ~a.template.n.indexOf( name ); } );
+}
+
+function Ractive$fire ( eventName ) {
+	var args = [], len = arguments.length - 1;
+	while ( len-- > 0 ) args[ len ] = arguments[ len + 1 ];
+
+	var ctx;
+
+	// watch for reproxy
+	if ( args[0] instanceof Context  ) {
+		var proto = args.shift();
+		ctx = create( proto );
+		assign( ctx, proto );
+	} else if ( isObjectType( args[0] ) && ( args[0] === null || args[0].constructor === Object ) ) {
+		ctx = Context.forRactive( this, args.shift() );
+	} else {
+		ctx = Context.forRactive( this );
+	}
+
+
+	return fireEvent( this, eventName, ctx, args );
+}
+
+function Ractive$get ( keypath, opts ) {
+	if ( !isString( keypath ) ) { return this.viewmodel.get( true, keypath ); }
+
+	var keys = splitKeypath( keypath );
+	var key = keys[0];
+
+	var model;
+
+	if ( !this.viewmodel.has( key ) ) {
+		// if this is an inline component, we may need to create
+		// an implicit mapping
+		if ( this.component && !this.isolated ) {
+			model = resolveReference( this.fragment || new FakeFragment( this ), key );
+		}
+	}
+
+	model = this.viewmodel.joinAll( keys );
+	return model.get( true, opts );
+}
+
+var query = doc && doc.querySelector;
+
+function getContext$2 ( node ) {
+	if ( isString( node ) && query ) {
+		node = query.call( document, node );
+	}
+
+	var instances;
+	if ( node ) {
+		if ( node._ractive ) {
+			return node._ractive.proxy.getContext();
+		} else if ( ( instances = node.__ractive_instances__ ) && instances.length === 1 ) {
+			return getRactiveContext( instances[0] );
+		}
+	}
+}
+
+function getNodeInfo$1 ( node ) {
+	warnOnceIfDebug( "getNodeInfo has been renamed to getContext, and the getNodeInfo alias will be removed in a future release." );
+	return getContext$2 ( node );
+}
+
+function getContext$1 ( node, options ) {
+	if ( isString( node ) ) {
+		node = this.find( node, options );
+	}
+
+	return getContext$2( node );
+}
+
+function getNodeInfo$$1 ( node, options ) {
+	if ( isString( node ) ) {
+		node = this.find( node, options );
+	}
+
+	return getNodeInfo$1( node );
+}
+
+var html   = 'http://www.w3.org/1999/xhtml';
+var mathml = 'http://www.w3.org/1998/Math/MathML';
+var svg$1    = 'http://www.w3.org/2000/svg';
+var xlink  = 'http://www.w3.org/1999/xlink';
+var xml    = 'http://www.w3.org/XML/1998/namespace';
+var xmlns  = 'http://www.w3.org/2000/xmlns';
+
+var namespaces = { html: html, mathml: mathml, svg: svg$1, xlink: xlink, xml: xml, xmlns: xmlns };
+
+var createElement;
+var matches;
+var div;
+var methodNames;
+var unprefixed;
+var prefixed;
+var i;
+var j;
+var makeFunction;
+
+// Test for SVG support
+if ( !svg ) {
+	/* istanbul ignore next */
+	createElement = function ( type, ns, extend ) {
+		if ( ns && ns !== html ) {
+			throw 'This browser does not support namespaces other than http://www.w3.org/1999/xhtml. The most likely cause of this error is that you\'re trying to render SVG in an older browser. See http://ractive.js.org/support/#svgs for more information';
+		}
+
+		return extend ?
+			doc.createElement( type, extend ) :
+			doc.createElement( type );
+	};
+} else {
+	createElement = function ( type, ns, extend ) {
+		if ( !ns || ns === html ) {
+			return extend ?
+				doc.createElement( type, extend ) :
+				doc.createElement( type );
+		}
+
+		return extend ?
+			doc.createElementNS( ns, type, extend ) :
+			doc.createElementNS( ns, type );
+	};
+}
+
+function createDocumentFragment () {
+	return doc.createDocumentFragment();
+}
+
+function getElement ( input ) {
+	var output;
+
+	if ( !input || typeof input === 'boolean' ) { return; }
+
+	/* istanbul ignore next */
+	if ( !win || !doc || !input ) {
+		return null;
+	}
+
+	// We already have a DOM node - no work to do. (Duck typing alert!)
+	if ( input.nodeType ) {
+		return input;
+	}
+
+	// Get node from string
+	if ( isString( input ) ) {
+		// try ID first
+		output = doc.getElementById( input );
+
+		// then as selector, if possible
+		if ( !output && doc.querySelector ) {
+			try {
+				output = doc.querySelector( input );
+			} catch (e) { /* this space intentionally left blank */ }
+		}
+
+		// did it work?
+		if ( output && output.nodeType ) {
+			return output;
+		}
+	}
+
+	// If we've been given a collection (jQuery, Zepto etc), extract the first item
+	if ( input[0] && input[0].nodeType ) {
+		return input[0];
+	}
+
+	return null;
+}
+
+if ( !isClient ) {
+	matches = null;
+} else {
+	div = createElement( 'div' );
+	methodNames = [ 'matches', 'matchesSelector' ];
+
+	makeFunction = function ( methodName ) {
+		return function ( node, selector ) {
+			return node[ methodName ]( selector );
+		};
+	};
+
+	i = methodNames.length;
+
+	while ( i-- && !matches ) {
+		unprefixed = methodNames[i];
+
+		if ( div[ unprefixed ] ) {
+			matches = makeFunction( unprefixed );
+		} else {
+			j = vendors.length;
+			while ( j-- ) {
+				prefixed = vendors[i] + unprefixed.substr( 0, 1 ).toUpperCase() + unprefixed.substring( 1 );
+
+				if ( div[ prefixed ] ) {
+					matches = makeFunction( prefixed );
+					break;
+				}
+			}
+		}
+	}
+
+	// IE8... and apparently phantom some?
+	/* istanbul ignore next */
+	if ( !matches ) {
+		matches = function ( node, selector ) {
+			var parentNode, i;
+
+			parentNode = node.parentNode;
+
+			if ( !parentNode ) {
+				// empty dummy <div>
+				div.innerHTML = '';
+
+				parentNode = div;
+				node = node.cloneNode();
+
+				div.appendChild( node );
+			}
+
+			var nodes = parentNode.querySelectorAll( selector );
+
+			i = nodes.length;
+			while ( i-- ) {
+				if ( nodes[i] === node ) {
+					return true;
+				}
+			}
+
+			return false;
+		};
+	}
+}
+
+function detachNode ( node ) {
+	// stupid ie
+	if ( node && typeof node.parentNode !== 'unknown' && node.parentNode ) { // eslint-disable-line valid-typeof
+		node.parentNode.removeChild( node );
+	}
+
+	return node;
+}
+
+function safeToStringValue ( value ) {
+	return ( value == null || ( isNumber( value ) && isNaN( value ) ) || !value.toString ) ? '' : '' + value;
+}
+
+function safeAttributeString ( string ) {
+	return safeToStringValue( string )
+		.replace( /&/g, '&amp;' )
+		.replace( /"/g, '&quot;' )
+		.replace( /'/g, '&#39;' );
+}
+
+var insertHook = new Hook( 'insert' );
+
+function Ractive$insert ( target, anchor ) {
+	if ( !this.fragment.rendered ) {
+		// TODO create, and link to, documentation explaining this
+		throw new Error( 'The API has changed - you must call `ractive.render(target[, anchor])` to render your Ractive instance. Once rendered you can use `ractive.insert()`.' );
+	}
+
+	target = getElement( target );
+	anchor = getElement( anchor ) || null;
+
+	if ( !target ) {
+		throw new Error( 'You must specify a valid target to insert into' );
+	}
+
+	target.insertBefore( this.detach(), anchor );
+	this.el = target;
+
+	( target.__ractive_instances__ || ( target.__ractive_instances__ = [] ) ).push( this );
+	this.isDetached = false;
+
+	fireInsertHook( this );
+}
+
+function fireInsertHook( ractive ) {
+	insertHook.fire( ractive );
+
+	ractive.findAllComponents('*').forEach( function (child) {
+		fireInsertHook( child.instance );
+	});
+}
+
+function link ( there, here, options ) {
+	var model;
+	var target = ( options && ( options.ractive || options.instance ) ) || this;
+
+	// may need to allow a mapping to resolve implicitly
+	var sourcePath = splitKeypath( there );
+	if ( !target.viewmodel.has( sourcePath[0] ) && target.component ) {
+		model = resolveReference( target.component.up, sourcePath[0] );
+		model = model.joinAll( sourcePath.slice( 1 ) );
+	}
+
+	var src = model || target.viewmodel.joinAll( sourcePath );
+	var dest = this.viewmodel.joinAll( splitKeypath( here ), { lastLink: false });
+
+	if ( isUpstream( src, dest ) || isUpstream( dest, src ) ) {
+		throw new Error( 'A keypath cannot be linked to itself.' );
+	}
+
+	var promise = runloop.start();
+
+	dest.link( src, ( options && options.keypath ) || there );
+
+	runloop.end();
+
+	return promise;
+}
+
+function isUpstream ( check, start ) {
+	var model = start;
+	while ( model ) {
+		if ( model === check || model.owner === check ) { return true; }
+		model = model.target || model.parent;
+	}
+}
+
+var Observer = function Observer ( ractive, model, callback, options ) {
+	this.context = options.context || ractive;
+	this.callback = callback;
+	this.ractive = ractive;
+	this.keypath = options.keypath;
+	this.options = options;
+
+	if ( model ) { this.resolved( model ); }
+
+	if ( isFunction( options.old ) ) {
+		this.oldContext = create( ractive );
+		this.oldFn = options.old;
+	}
+
+	if ( options.init !== false ) {
+		this.dirty = true;
+		this.dispatch();
+	} else {
+		updateOld( this );
+	}
+
+	this.dirty = false;
+};
+var Observer__proto__ = Observer.prototype;
+
+Observer__proto__.cancel = function cancel () {
+	this.cancelled = true;
+	if ( this.model ) {
+		this.model.unregister( this );
+	} else {
+		this.resolver.unbind();
+	}
+	removeFromArray( this.ractive._observers, this );
+};
+
+Observer__proto__.dispatch = function dispatch () {
+	if ( !this.cancelled ) {
+		this.callback.call( this.context, this.newValue, this.oldValue, this.keypath );
+		updateOld( this, true );
+		this.dirty = false;
+	}
+};
+
+Observer__proto__.handleChange = function handleChange () {
+		var this$1 = this;
+
+	if ( !this.dirty ) {
+		var newValue = this.model.get();
+		if ( isEqual( newValue, this.oldValue ) ) { return; }
+
+		this.newValue = newValue;
+
+		if ( this.options.strict && this.newValue === this.oldValue ) { return; }
+
+		runloop.addObserver( this, this.options.defer );
+		this.dirty = true;
+
+		if ( this.options.once ) { runloop.scheduleTask( function () { return this$1.cancel(); } ); }
+	}
+};
+
+Observer__proto__.rebind = function rebind ( next, previous ) {
+		var this$1 = this;
+
+	next = rebindMatch( this.keypath, next, previous );
+	if ( next === this.model ) { return false; }
+
+	if ( this.model ) { this.model.unregister( this ); }
+	if ( next ) { next.addShuffleTask( function () { return this$1.resolved( next ); } ); }
+};
+
+Observer__proto__.resolved = function resolved ( model ) {
+	this.model = model;
+
+	this.oldValue = undefined;
+	this.newValue = model.get();
+
+	model.register( this );
+};
+
+function updateOld( observer, fresh ) {
+	var next = fresh ? ( observer.model ? observer.model.get() : observer.newValue ) : observer.newValue;
+	observer.oldValue = observer.oldFn ? observer.oldFn.call( observer.oldContext, undefined, next, observer.keypath ) : next;
+}
+
+var star$1 = /\*+/g;
+
+var PatternObserver = function PatternObserver ( ractive, baseModel, keys$$1, callback, options ) {
+	var this$1 = this;
+
+	this.context = options.context || ractive;
+	this.ractive = ractive;
+	this.baseModel = baseModel;
+	this.keys = keys$$1;
+	this.callback = callback;
+
+	var pattern = keys$$1.join( '\\.' ).replace( star$1, '(.+)' );
+	var baseKeypath = this.baseKeypath = baseModel.getKeypath( ractive );
+	this.pattern = new RegExp( ("^" + (baseKeypath ? baseKeypath + '\\.' : '') + pattern + "$") );
+	this.recursive = keys$$1.length === 1 && keys$$1[0] === '**';
+	if ( this.recursive ) { this.keys = [ '*' ]; }
+	if ( options.old ) {
+		this.oldContext = create( ractive );
+		this.oldFn = options.old;
+	}
+
+	this.oldValues = {};
+	this.newValues = {};
+
+	this.defer = options.defer;
+	this.once = options.once;
+	this.strict = options.strict;
+
+	this.dirty = false;
+	this.changed = [];
+	this.partial = false;
+	this.links = options.links;
+
+	var models = baseModel.findMatches( this.keys );
+
+	models.forEach( function (model) {
+		this$1.newValues[ model.getKeypath( this$1.ractive ) ] = model.get();
+	});
+
+	if ( options.init !== false ) {
+		this.dispatch();
+	} else {
+		updateOld$1( this, this.newValues );
+	}
+
+	baseModel.registerPatternObserver( this );
+};
+var PatternObserver__proto__ = PatternObserver.prototype;
+
+PatternObserver__proto__.cancel = function cancel () {
+	this.baseModel.unregisterPatternObserver( this );
+	removeFromArray( this.ractive._observers, this );
+};
+
+PatternObserver__proto__.dispatch = function dispatch () {
+		var this$1 = this;
+
+	var newValues = this.newValues;
+	this.newValues = {};
+	keys( newValues ).forEach( function (keypath) {
+		var newValue = newValues[ keypath ];
+		var oldValue = this$1.oldValues[ keypath ];
+
+		if ( this$1.strict && newValue === oldValue ) { return; }
+		if ( isEqual( newValue, oldValue ) ) { return; }
+
+		var args = [ newValue, oldValue, keypath ];
+		if ( keypath ) {
+			var wildcards = this$1.pattern.exec( keypath );
+			if ( wildcards ) {
+				args = args.concat( wildcards.slice( 1 ) );
+			}
+		}
+
+		this$1.callback.apply( this$1.context, args );
+	});
+
+	updateOld$1( this, newValues, this.partial );
+
+	this.dirty = false;
+};
+
+PatternObserver__proto__.notify = function notify ( key ) {
+	this.changed.push( key );
+};
+
+PatternObserver__proto__.shuffle = function shuffle ( newIndices ) {
+		var this$1 = this;
+
+	if ( !isArray( this.baseModel.value ) ) { return; }
+
+	var max = this.baseModel.value.length;
+
+	for ( var i = 0; i < newIndices.length; i++ ) {
+		if ( newIndices[ i ] === -1 || newIndices[ i ] === i ) { continue; }
+		this$1.changed.push([ i ]);
+	}
+
+	for ( var i$1 = newIndices.touchedFrom; i$1 < max; i$1++ ) {
+		this$1.changed.push([ i$1 ]);
+	}
+};
+
+PatternObserver__proto__.handleChange = function handleChange () {
+		var this$1 = this;
+
+	if ( !this.dirty || this.changed.length ) {
+		if ( !this.dirty ) { this.newValues = {}; }
+
+		if ( !this.changed.length ) {
+			this.baseModel.findMatches( this.keys ).forEach( function (model) {
+				var keypath = model.getKeypath( this$1.ractive );
+				this$1.newValues[ keypath ] = model.get();
+			});
+			this.partial = false;
+		} else {
+			var count = 0;
+
+			if ( this.recursive ) {
+				this.changed.forEach( function (keys$$1) {
+					var model = this$1.baseModel.joinAll( keys$$1 );
+					if ( model.isLink && !this$1.links ) { return; }
+					count++;
+					this$1.newValues[ model.getKeypath( this$1.ractive ) ] = model.get();
+				});
+			} else {
+				var ok = this.baseModel.isRoot ?
+					this.changed.map( function (keys$$1) { return keys$$1.map( escapeKey ).join( '.' ); } ) :
+					this.changed.map( function (keys$$1) { return this$1.baseKeypath + '.' + keys$$1.map( escapeKey ).join( '.' ); } );
+
+				this.baseModel.findMatches( this.keys ).forEach( function (model) {
+					var keypath = model.getKeypath( this$1.ractive );
+					var check = function (k) {
+						return ( k.indexOf( keypath ) === 0 && ( k.length === keypath.length || k[ keypath.length ] === '.' ) ) ||
+							( keypath.indexOf( k ) === 0 && ( k.length === keypath.length || keypath[ k.length ] === '.' ) );
+					};
+
+					// is this model on a changed keypath?
+					if ( ok.filter( check ).length ) {
+						count++;
+						this$1.newValues[ keypath ] = model.get();
+					}
+				});
+			}
+
+			// no valid change triggered, so bail to avoid breakage
+			if ( !count ) { return; }
+
+			this.partial = true;
+		}
+
+		runloop.addObserver( this, this.defer );
+		this.dirty = true;
+		this.changed.length = 0;
+
+		if ( this.once ) { this.cancel(); }
+	}
+};
+
+function updateOld$1( observer, vals, partial ) {
+	var olds = observer.oldValues;
+
+	if ( observer.oldFn ) {
+		if ( !partial ) { observer.oldValues = {}; }
+
+		keys( vals ).forEach( function (k) {
+			var args = [ olds[k], vals[k], k ];
+			var parts = observer.pattern.exec( k );
+			if ( parts ) {
+				args.push.apply( args, parts.slice( 1 ) );
+			}
+			observer.oldValues[k] = observer.oldFn.apply( observer.oldContext, args );
+		});
+	} else {
+		if ( partial ) {
+			keys( vals ).forEach( function (k) { return olds[k] = vals[k]; } );
+		} else {
+			observer.oldValues = vals;
+		}
+	}
+}
+
+function negativeOne () {
+	return -1;
+}
+
+var ArrayObserver = function ArrayObserver ( ractive, model, callback, options ) {
+	this.ractive = ractive;
+	this.model = model;
+	this.keypath = model.getKeypath();
+	this.callback = callback;
+	this.options = options;
+
+	this.pending = null;
+
+	model.register( this );
+
+	if ( options.init !== false ) {
+		this.sliced = [];
+		this.shuffle([]);
+		this.dispatch();
+	} else {
+		this.sliced = this.slice();
+	}
+};
+var ArrayObserver__proto__ = ArrayObserver.prototype;
+
+ArrayObserver__proto__.cancel = function cancel () {
+	this.model.unregister( this );
+	removeFromArray( this.ractive._observers, this );
+};
+
+ArrayObserver__proto__.dispatch = function dispatch () {
+	this.callback( this.pending );
+	this.pending = null;
+	if ( this.options.once ) { this.cancel(); }
+};
+
+ArrayObserver__proto__.handleChange = function handleChange ( path ) {
+	if ( this.pending ) {
+		// post-shuffle
+		runloop.addObserver( this, this.options.defer );
+	} else if ( !path ) {
+		// entire array changed
+		this.shuffle( this.sliced.map( negativeOne ) );
+		this.handleChange();
+	}
+};
+
+ArrayObserver__proto__.shuffle = function shuffle ( newIndices ) {
+		var this$1 = this;
+
+	var newValue = this.slice();
+
+	var inserted = [];
+	var deleted = [];
+	var start;
+
+	var hadIndex = {};
+
+	newIndices.forEach( function ( newIndex, oldIndex ) {
+		hadIndex[ newIndex ] = true;
+
+		if ( newIndex !== oldIndex && start === undefined ) {
+			start = oldIndex;
+		}
+
+		if ( newIndex === -1 ) {
+			deleted.push( this$1.sliced[ oldIndex ] );
+		}
+	});
+
+	if ( start === undefined ) { start = newIndices.length; }
+
+	var len = newValue.length;
+	for ( var i = 0; i < len; i += 1 ) {
+		if ( !hadIndex[i] ) { inserted.push( newValue[i] ); }
+	}
+
+	this.pending = { inserted: inserted, deleted: deleted, start: start };
+	this.sliced = newValue;
+};
+
+ArrayObserver__proto__.slice = function slice () {
+	var value = this.model.get();
+	return isArray( value ) ? value.slice() : [];
+};
+
+function observe ( keypath, callback, options ) {
+	var this$1 = this;
+
+	var observers = [];
+	var map;
+	var opts;
+
+	if ( isObject( keypath ) ) {
+		map = keypath;
+		opts = callback || {};
+	} else {
+		if ( isFunction( keypath ) ) {
+			map = { '': keypath };
+			opts = callback || {};
+		} else {
+			map = {};
+			map[ keypath ] = callback;
+			opts = options || {};
+		}
+	}
+
+	var silent = false;
+	keys( map ).forEach( function (keypath) {
+		var callback = map[ keypath ];
+		var caller = function () {
+			var args = [], len = arguments.length;
+			while ( len-- ) args[ len ] = arguments[ len ];
+
+			if ( silent ) { return; }
+			return callback.apply( this, args );
+		};
+
+		var keypaths = keypath.split( ' ' );
+		if ( keypaths.length > 1 ) { keypaths = keypaths.filter( function (k) { return k; } ); }
+
+		keypaths.forEach( function (keypath) {
+			opts.keypath = keypath;
+			var observer = createObserver( this$1, keypath, caller, opts );
+			if ( observer ) { observers.push( observer ); }
+		});
+	});
+
+	// add observers to the Ractive instance, so they can be
+	// cancelled on ractive.teardown()
+	this._observers.push.apply( this._observers, observers );
+
+	return {
+		cancel: function () { return observers.forEach( function (o) { return o.cancel(); } ); },
+		isSilenced: function () { return silent; },
+		silence: function () { return silent = true; },
+		resume: function () { return silent = false; }
+	};
+}
+
+function createObserver ( ractive, keypath, callback, options ) {
+	var keys$$1 = splitKeypath( keypath );
+	var wildcardIndex = keys$$1.indexOf( '*' );
+	if ( !~wildcardIndex ) { wildcardIndex = keys$$1.indexOf( '**' ); }
+
+	options.fragment = options.fragment || ractive.fragment;
+
+	var model;
+	if ( !options.fragment ) {
+		model = ractive.viewmodel.joinKey( keys$$1[0] );
+	} else {
+		// .*.whatever relative wildcard is a special case because splitkeypath doesn't handle the leading .
+		if ( ~keys$$1[0].indexOf( '.*' ) ) {
+			model = options.fragment.findContext();
+			wildcardIndex = 0;
+			keys$$1[0] = keys$$1[0].slice( 1 );
+		} else {
+			model = wildcardIndex === 0 ? options.fragment.findContext() : resolveReference( options.fragment, keys$$1[0] );
+		}
+	}
+
+	// the model may not exist key
+	if ( !model ) { model = ractive.viewmodel.joinKey( keys$$1[0] ); }
+
+	if ( !~wildcardIndex ) {
+		model = model.joinAll( keys$$1.slice( 1 ) );
+		if ( options.array ) {
+			return new ArrayObserver( ractive, model, callback, options );
+		} else {
+			return new Observer( ractive, model, callback, options );
+		}
+	} else {
+		var double = keys$$1.indexOf( '**' );
+		if ( ~double ) {
+			if ( double + 1 !== keys$$1.length || ~keys$$1.indexOf( '*' ) ) {
+				warnOnceIfDebug( "Recursive observers may only specify a single '**' at the end of the path." );
+				return;
+			}
+		}
+
+		model = model.joinAll( keys$$1.slice( 1, wildcardIndex ) );
+
+		return new PatternObserver( ractive, model, keys$$1.slice( wildcardIndex ), callback, options );
+	}
+}
+
+var onceOptions = { init: false, once: true };
+
+function observeOnce ( keypath, callback, options ) {
+	if ( isObject( keypath ) || isFunction( keypath ) ) {
+		options = assign( callback || {}, onceOptions );
+		return this.observe( keypath, options );
+	}
+
+	options = assign( options || {}, onceOptions );
+	return this.observe( keypath, callback, options );
+}
+
+var trim = function (str) { return str.trim(); };
+
+var notEmptyString = function (str) { return str !== ''; };
+
+function Ractive$off ( eventName, callback ) {
+	var this$1 = this;
+
+	// if no event is specified, remove _all_ event listeners
+	if ( !eventName ) {
+		this._subs = {};
+	} else {
+		// Handle multiple space-separated event names
+		var eventNames = eventName.split( ' ' ).map( trim ).filter( notEmptyString );
+
+		eventNames.forEach( function (event) {
+			var subs = this$1._subs[ event ];
+			// if given a specific callback to remove, remove only it
+			if ( subs && callback ) {
+				var entry = subs.find( function (s) { return s.callback === callback; } );
+				if ( entry ) {
+					removeFromArray( subs, entry );
+					entry.off = true;
+
+					if ( event.indexOf( '.' ) ) { this$1._nsSubs--; }
+				}
+			}
+
+			// otherwise, remove all listeners for this event
+			else if ( subs ) {
+				if ( event.indexOf( '.' ) ) { this$1._nsSubs -= subs.length; }
+				subs.length = 0;
+			}
+		});
+	}
+
+	return this;
+}
+
+function Ractive$on ( eventName, callback ) {
+	var this$1 = this;
+
+	// eventName may already be a map
+	var map = isObjectType( eventName ) ? eventName : {};
+	// or it may be a string along with a callback
+	if ( isString( eventName ) ) { map[ eventName ] = callback; }
+
+	var silent = false;
+	var events = [];
+
+	var loop = function ( k ) {
+		var callback$1 = map[k];
+		var caller = function () {
+			var args = [], len = arguments.length;
+			while ( len-- ) args[ len ] = arguments[ len ];
+
+			if ( !silent ) { return callback$1.apply( this, args ); }
+		};
+		var entry = {
+			callback: callback$1,
+			handler: caller
+		};
+
+		if ( hasOwn( map, k ) ) {
+			var names = k.split( ' ' ).map( trim ).filter( notEmptyString );
+			names.forEach( function (n) {
+				( this$1._subs[ n ] || ( this$1._subs[ n ] = [] ) ).push( entry );
+				if ( n.indexOf( '.' ) ) { this$1._nsSubs++; }
+				events.push( [ n, entry ] );
+			});
+		}
+	};
+
+	for ( var k in map ) loop( k );
+
+	return {
+		cancel: function () { return events.forEach( function (e) { return this$1.off( e[0], e[1].callback ); } ); },
+		isSilenced: function () { return silent; },
+		silence: function () { return silent = true; },
+		resume: function () { return silent = false; }
+	};
+}
+
+function Ractive$once ( eventName, handler ) {
+	var listener = this.on( eventName, function () {
+		handler.apply( this, arguments );
+		listener.cancel();
+	});
+
+	// so we can still do listener.cancel() manually
+	return listener;
+}
+
+var pop = makeArrayMethod( 'pop' ).path;
+
+var push = makeArrayMethod( 'push' ).path;
+
+function readLink ( keypath, options ) {
+	if ( options === void 0 ) options = {};
+
+	var path = splitKeypath( keypath );
+
+	if ( this.viewmodel.has( path[0] ) ) {
+		var model = this.viewmodel.joinAll( path );
+
+		if ( !model.isLink ) { return; }
+
+		while ( ( model = model.target ) && options.canonical !== false ) {
+			if ( !model.isLink ) { break; }
+		}
+
+		if ( model ) { return { ractive: model.root.ractive, keypath: model.getKeypath() }; }
+	}
+}
+
+var PREFIX = '/* Ractive.js component styles */';
+
+// Holds current definitions of styles.
+var styleDefinitions = [];
+
+// Flag to tell if we need to update the CSS
+var isDirty = false;
+
+// These only make sense on the browser. See additional setup below.
+var styleElement = null;
+var useCssText = null;
+
+function addCSS ( styleDefinition ) {
+	styleDefinitions.push( styleDefinition );
+	isDirty = true;
+}
+
+function applyCSS ( force ) {
+	var styleElement = style();
+
+	// Apply only seems to make sense when we're in the DOM. Server-side renders
+	// can call toCSS to get the updated CSS.
+	if ( !styleElement || ( !force && !isDirty ) ) { return; }
+
+	if ( useCssText ) {
+		styleElement.styleSheet.cssText = getCSS( null );
+	} else {
+		styleElement.innerHTML = getCSS( null );
+	}
+
+	isDirty = false;
+}
+
+function getCSS ( cssIds ) {
+	var filteredStyleDefinitions = cssIds ? styleDefinitions.filter( function (style) { return ~cssIds.indexOf( style.id ); } ) : styleDefinitions;
+
+	filteredStyleDefinitions.forEach( function (d) { return d.applied = true; } );
+
+	return filteredStyleDefinitions.reduce( function ( styles, style ) { return ("" + (styles ? (styles + "\n\n/* {" + (style.id) + "} */\n" + (style.styles)) : '')); }, PREFIX );
+}
+
+function style () {
+	// If we're on the browser, additional setup needed.
+	if ( doc && !styleElement ) {
+		styleElement = doc.createElement( 'style' );
+		styleElement.type = 'text/css';
+		styleElement.setAttribute( 'data-ractive-css', '' );
+
+		doc.getElementsByTagName( 'head' )[0].appendChild( styleElement );
+
+		useCssText = !!styleElement.styleSheet;
+	}
+
+	return styleElement;
+}
+
+var adaptConfigurator = {
+	extend: function ( Parent, proto, options ) {
+		proto.adapt = combine( proto.adapt, ensureArray( options.adapt ) );
+	},
+
+	init: function init () {}
+};
+
+var remove = /\/\*(?:[\s\S]*?)\*\//g;
+var escape = /url\(\s*(['"])(?:\\[\s\S]|(?!\1).)*\1\s*\)|url\((?:\\[\s\S]|[^)])*\)|(['"])(?:\\[\s\S]|(?!\2).)*\2/gi;
+var value = /\0(\d+)/g;
+
+// Removes comments and strings from the given CSS to make it easier to parse.
+// Callback receives the cleaned CSS and a function which can be used to put
+// the removed strings back in place after parsing is done.
+var cleanCss = function ( css, callback, additionalReplaceRules ) {
+	if ( additionalReplaceRules === void 0 ) additionalReplaceRules = [];
+
+	var values = [];
+	var reconstruct = function (css) { return css.replace( value, function ( match, n ) { return values[ n ]; } ); };
+	css = css.replace( escape, function (match) { return ("\u0000" + (values.push( match ) - 1)); }).replace( remove, '' );
+
+	additionalReplaceRules.forEach( function ( pattern ) {
+		css = css.replace( pattern, function (match) { return ("\u0000" + (values.push( match ) - 1)); } );
+	});
+
+	return callback( css, reconstruct );
+};
+
+var selectorsPattern = /(?:^|\}|\{)\s*([^\{\}\0]+)\s*(?=\{)/g;
+var keyframesDeclarationPattern = /@keyframes\s+[^\{\}]+\s*\{(?:[^{}]+|\{[^{}]+})*}/gi;
+var selectorUnitPattern = /((?:(?:\[[^\]]+\])|(?:[^\s\+\>~:]))+)((?:::?[^\s\+\>\~\(:]+(?:\([^\)]+\))?)*\s*[\s\+\>\~]?)\s*/g;
+var excludePattern = /^(?:@|\d+%)/;
+var dataRvcGuidPattern = /\[data-ractive-css~="\{[a-z0-9-]+\}"]/g;
+
+function trim$1 ( str ) {
+	return str.trim();
+}
+
+function extractString ( unit ) {
+	return unit.str;
+}
+
+function transformSelector ( selector, parent ) {
+	var selectorUnits = [];
+	var match;
+
+	while ( match = selectorUnitPattern.exec( selector ) ) {
+		selectorUnits.push({
+			str: match[0],
+			base: match[1],
+			modifiers: match[2]
+		});
+	}
+
+	// For each simple selector within the selector, we need to create a version
+	// that a) combines with the id, and b) is inside the id
+	var base = selectorUnits.map( extractString );
+
+	var transformed = [];
+	var i = selectorUnits.length;
+
+	while ( i-- ) {
+		var appended = base.slice();
+
+		// Pseudo-selectors should go after the attribute selector
+		var unit = selectorUnits[i];
+		appended[i] = unit.base + parent + unit.modifiers || '';
+
+		var prepended = base.slice();
+		prepended[i] = parent + ' ' + prepended[i];
+
+		transformed.push( appended.join( ' ' ), prepended.join( ' ' ) );
+	}
+
+	return transformed.join( ', ' );
+}
+
+function transformCss ( css, id ) {
+	var dataAttr = "[data-ractive-css~=\"{" + id + "}\"]";
+
+	var transformed;
+
+	if ( dataRvcGuidPattern.test( css ) ) {
+		transformed = css.replace( dataRvcGuidPattern, dataAttr );
+	} else {
+		transformed = cleanCss( css, function ( css, reconstruct ) {
+			css = css.replace( selectorsPattern, function ( match, $1 ) {
+				// don't transform at-rules and keyframe declarations
+				if ( excludePattern.test( $1 ) ) { return match; }
+
+				var selectors = $1.split( ',' ).map( trim$1 );
+				var transformed = selectors
+					.map( function (selector) { return transformSelector( selector, dataAttr ); } )
+					.join( ', ' ) + ' ';
+
+				return match.replace( $1, transformed );
+			});
+
+			return reconstruct( css );
+		}, [ keyframesDeclarationPattern ]);
+	}
+
+	return transformed;
+}
+
+function s4() {
+	return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
+}
+
+function uuid() {
+	return s4() + s4() + '-' + s4() + '-' + s4() + '-' + s4() + '-' + s4() + s4() + s4();
+}
+
+function setCSSData ( keypath, value, options ) {
+	var opts = isObjectType( keypath ) ? value : options;
+	var model = this._cssModel;
+
+	model.locked = true;
+	var promise = set( build( { viewmodel: model }, keypath, value, true ), opts );
+	model.locked = false;
+
+	var cascade = runloop.start();
+	this.extensions.forEach( function (e) {
+		var model = e._cssModel;
+		model.mark();
+		model.downstreamChanged( '', 1 );
+	});
+	runloop.end();
+
+	applyChanges( this, !opts || opts.apply !== false );
+
+	return promise.then( function () { return cascade; } );
+}
+
+function applyChanges ( component, apply ) {
+	var local = recomputeCSS( component );
+	var child = component.extensions.map( function (e) { return applyChanges( e, false ); } ).
+	  reduce( function ( a, c ) { return c || a; }, false );
+
+	if ( apply && ( local || child ) ) {
+		var def = component._cssDef;
+		if ( !def || ( def && def.applied ) ) { applyCSS( true ); }
+	}
+
+	return local || child;
+}
+
+function recomputeCSS ( component ) {
+	var css = component._css;
+
+	if ( !isFunction( css ) ) { return; }
+
+	var def = component._cssDef;
+	var result = evalCSS( component, css );
+	var styles = def.transform ? transformCss( result, def.id ) : result;
+
+	if ( def.styles === styles ) { return; }
+
+	def.styles = styles;
+
+	return true;
+}
+
+var CSSModel = (function (SharedModel) {
+	function CSSModel ( component ) {
+		SharedModel.call( this, component.cssData, '@style' );
+		this.component = component;
+	}
+
+	if ( SharedModel ) CSSModel.__proto__ = SharedModel;
+	var CSSModel__proto__ = CSSModel.prototype = Object.create( SharedModel && SharedModel.prototype );
+	CSSModel__proto__.constructor = CSSModel;
+
+	CSSModel__proto__.downstreamChanged = function downstreamChanged ( path, depth ) {
+		if ( this.locked ) { return; }
+
+		var component = this.component;
+
+		component.extensions.forEach( function (e) {
+			var model = e._cssModel;
+			model.mark();
+			model.downstreamChanged( path, depth || 1 );
+		});
+
+		if ( !depth ) {
+			applyChanges( component, true );
+		}
+	};
+
+	return CSSModel;
+}(SharedModel));
+
+var hasCurly = /\{/;
+var cssConfigurator = {
+	name: 'css',
+
+	// Called when creating a new component definition
+	extend: function ( Parent, proto, options, Child ) {
+		Child._cssIds = gatherIds( Parent );
+
+		defineProperty( Child, 'cssData', {
+			configurable: true,
+			value: assign( create( Parent.cssData ), options.cssData || {} )
+		});
+
+		defineProperty( Child, '_cssModel', {
+			configurable: true,
+			value: new CSSModel( Child )
+		});
+
+		if ( options.css ) { initCSS( options, Child, proto ); }
+	},
+
+	// Called when creating a new component instance
+	init: function ( Parent, target, options ) {
+		if ( !options.css ) { return; }
+
+		warnIfDebug( "\nThe css option is currently not supported on a per-instance basis and will be discarded. Instead, we recommend instantiating from a component definition with a css option.\n\nconst Component = Ractive.extend({\n\t...\n\tcss: '/* your css */',\n\t...\n});\n\nconst componentInstance = new Component({ ... })\n\t\t" );
+	}
+};
+
+function gatherIds ( start ) {
+	var cmp = start;
+	var ids = [];
+
+	while ( cmp ) {
+		if ( cmp.prototype.cssId ) { ids.push( cmp.prototype.cssId ); }
+		cmp = cmp.Parent;
+	}
+
+	return ids;
+}
+
+function evalCSS ( component, css ) {
+	var cssData = component.cssData;
+	var model = component._cssModel;
+	var data = function data ( path ) {
+		return model.joinAll( splitKeypath( path ) ).get();
+	};
+	data.__proto__ = cssData;
+
+	var result = css.call( component, data );
+	return isString( result ) ? result : '';
+}
+
+function initCSS ( options, target, proto ) {
+	var css = isString( options.css ) && !hasCurly.test( options.css ) ?
+		( getElement( options.css ) || options.css ) :
+		options.css;
+
+	var id = options.cssId || uuid();
+
+	if ( isObjectType( css ) ) {
+		css = 'textContent' in css ? css.textContent : css.innerHTML;
+	} else if ( isFunction( css ) ) {
+		target._css = options.css;
+		css = evalCSS( target, css );
+	}
+
+	var def = target._cssDef = { transform: !options.noCssTransform };
+
+	def.styles = def.transform ? transformCss( css, id ) : css;
+	def.id = proto.cssId = id;
+	target._cssIds.push( id );
+
+	addCSS( target._cssDef );
+}
+
+function validate ( data ) {
+	// Warn if userOptions.data is a non-POJO
+	if ( data && data.constructor !== Object ) {
+		if ( isFunction( data ) ) {
+			// TODO do we need to support this in the new Ractive() case?
+		} else if ( !isObjectType( data ) ) {
+			fatal( ("data option must be an object or a function, `" + data + "` is not valid") );
+		} else {
+			warnIfDebug( 'If supplied, options.data should be a plain JavaScript object - using a non-POJO as the root object may work, but is discouraged' );
+		}
+	}
+}
+
+var dataConfigurator = {
+	name: 'data',
+
+	extend: function ( Parent, proto, options ) {
+		var key;
+		var value;
+
+		// check for non-primitives, which could cause mutation-related bugs
+		if ( options.data && isObject( options.data ) ) {
+			for ( key in options.data ) {
+				value = options.data[ key ];
+
+				if ( value && isObjectType( value ) ) {
+					if ( isObject( value ) || isArray( value ) ) {
+						warnIfDebug( "Passing a `data` option with object and array properties to Ractive.extend() is discouraged, as mutating them is likely to cause bugs. Consider using a data function instead:\n\n  // this...\n  data: function () {\n    return {\n      myObject: {}\n    };\n  })\n\n  // instead of this:\n  data: {\n    myObject: {}\n  }" );
+					}
+				}
+			}
+		}
+
+		proto.data = combine$1( proto.data, options.data );
+	},
+
+	init: function ( Parent, ractive, options ) {
+		var result = combine$1( Parent.prototype.data, options.data );
+
+		if ( isFunction( result ) ) { result = result.call( ractive ); }
+
+		// bind functions to the ractive instance at the top level,
+		// unless it's a non-POJO (in which case alarm bells should ring)
+		if ( result && result.constructor === Object ) {
+			for ( var prop in result ) {
+				if ( isFunction( result[ prop ] ) ) {
+					var value = result[ prop ];
+					result[ prop ] = bind$1( value, ractive );
+					result[ prop ]._r_unbound = value;
+				}
+			}
+		}
+
+		return result || {};
+	},
+
+	reset: function reset ( ractive ) {
+		var result = this.init( ractive.constructor, ractive, ractive.viewmodel );
+		ractive.viewmodel.root.set( result );
+		return true;
+	}
+};
+
+function emptyData () { return {}; }
+
+function combine$1 ( parentValue, childValue ) {
+	validate( childValue );
+
+	var parentIsFn = isFunction( parentValue );
+
+	// Very important, otherwise child instance can become
+	// the default data object on Ractive or a component.
+	// then ractive.set() ends up setting on the prototype!
+	if ( !childValue && !parentIsFn ) {
+		// this needs to be a function so that it can still inherit parent defaults
+		childValue = emptyData;
+	}
+
+	var childIsFn = isFunction( childValue );
+
+	// Fast path, where we just need to copy properties from
+	// parent to child
+	if ( !parentIsFn && !childIsFn ) {
+		return fromProperties( childValue, parentValue );
+	}
+
+	return function () {
+		var child = childIsFn ? callDataFunction( childValue, this ) : childValue;
+		var parent = parentIsFn ? callDataFunction( parentValue, this ) : parentValue;
+
+		return fromProperties( child, parent );
+	};
+}
+
+function callDataFunction ( fn, context ) {
+	var data = fn.call( context );
+
+	if ( !data ) { return; }
+
+	if ( !isObjectType( data ) ) {
+		fatal( 'Data function must return an object' );
+	}
+
+	if ( data.constructor !== Object ) {
+		warnOnceIfDebug( 'Data function returned something other than a plain JavaScript object. This might work, but is strongly discouraged' );
+	}
+
+	return data;
+}
+
+function fromProperties ( primary, secondary ) {
+	if ( primary && secondary ) {
+		for ( var key in secondary ) {
+			if ( !( key in primary ) ) {
+				primary[ key ] = secondary[ key ];
+			}
+		}
+
+		return primary;
+	}
+
+	return primary || secondary;
 }
 
 var templateConfigurator = {
@@ -8654,13 +8797,15 @@ var registryNames = [
 	'decorators',
 	'easing',
 	'events',
+	'helpers',
 	'interpolators',
 	'partials',
 	'transitions'
 ];
 
 var registriesOnDefaults = [
-	'computed'
+	'computed',
+	'helpers'
 ];
 
 var Registry = function Registry ( name, useDefaults ) {
@@ -8786,10 +8931,18 @@ function deprecate ( options ) {
 	}
 }
 
+var config = {
+	extend: function ( Parent, proto$$1, options, Child ) { return configure( 'extend', Parent, proto$$1, options, Child ); },
+	init: function ( Parent, ractive, options ) { return configure( 'init', Parent, ractive, options ); },
+	reset: function (ractive) { return order.filter( function (c) { return c.reset && c.reset( ractive ); } ).map( function (c) { return c.name; } ); }
+};
+
 var custom = {
 	adapt: adaptConfigurator,
+	computed: config,
 	css: cssConfigurator,
 	data: dataConfigurator,
+	helpers: config,
 	template: templateConfigurator
 };
 
@@ -8807,12 +8960,6 @@ var order = [].concat(
 	custom.template,
 	custom.css
 );
-
-var config = {
-	extend: function ( Parent, proto$$1, options, Child ) { return configure( 'extend', Parent, proto$$1, options, Child ); },
-	init: function ( Parent, ractive, options ) { return configure( 'init', Parent, ractive, options ); },
-	reset: function (ractive) { return order.filter( function (c) { return c.reset && c.reset( ractive ); } ).map( function (c) { return c.name; } ); }
-};
 
 function configure ( method, Parent, target, options, Child ) {
 	deprecate( options );
@@ -9052,18 +9199,12 @@ var ComputationChild = (function (Model) {
 /* eslint no-console:"off" */
 
 var Computation = (function (Model) {
-	function Computation ( viewmodel, signature, key ) {
-		Model.call( this, null, null );
+	function Computation ( parent, signature, key ) {
+		Model.call( this, parent, key );
 
-		this.root = this.parent = viewmodel;
 		this.signature = signature;
 
-		this.key = key; // not actually used, but helps with debugging
-		this.isExpression = key && key[0] === '@';
-
 		this.isReadonly = !this.signature.setter;
-
-		this.context = viewmodel.computationContext;
 
 		this.dependencies = [];
 
@@ -9109,12 +9250,16 @@ var Computation = (function (Model) {
 		);
 	};
 
+	Computation__proto__.getContext = function getContext () {
+		return this.parent.isRoot ? this.root.ractive : this.parent.get( false, noVirtual );
+	};
+
 	Computation__proto__.getValue = function getValue () {
 		startCapturing();
 		var result;
 
 		try {
-			result = this.signature.getter.call( this.context );
+			result = this.signature.getter.call( this.root.ractive, this.getContext() );
 		} catch ( err ) {
 			warnIfDebug( ("Failed to compute " + (this.getKeypath()) + ": " + (err.message || err)) );
 
@@ -9180,7 +9325,7 @@ var Computation = (function (Model) {
 		while ( i-- ) {
 			if ( this$1.dependencies[i] ) { this$1.dependencies[i].unregister( this$1 ); }
 		}
-		if ( this.root.computations[this.key] === this ) { delete this.root.computations[this.key]; }
+		if ( this.parent.computed[this.key] === this ) { delete this.parent.computed[this.key]; }
 		Model.prototype.teardown.call(this);
 	};
 
@@ -9193,6 +9338,8 @@ var prototype$1 = Computation.prototype;
 var child = ComputationChild.prototype;
 prototype$1.handleChange = child.handleChange;
 prototype$1.joinKey = child.joinKey;
+
+shared.Computation = Computation;
 
 var ExpressionProxy = (function (Model) {
 	function ExpressionProxy ( fragment, template ) {
@@ -9464,7 +9611,7 @@ var ReferenceExpressionProxy = (function (Model) {
 		if ( !this.dirty ) { this.handleChange(); }
 	};
 
-	ReferenceExpressionProxy__proto__.get = function get ( shouldCapture, opts ) {
+	ReferenceExpressionProxy__proto__.get = function get ( shouldCapture ) {
 		if ( this.dirty ) {
 			this.bubble();
 
@@ -9485,12 +9632,12 @@ var ReferenceExpressionProxy = (function (Model) {
 				if ( this.keypathModel ) { this.keypathModel.handleChange(); }
 			}
 
-			this.value = this.model.get( shouldCapture, opts );
+			this.value = this.model.get( shouldCapture );
 			this.dirty = false;
 			this.mark();
 			return this.value;
 		} else {
-			return this.model ? this.model.get( shouldCapture, opts ) : undefined;
+			return this.model ? this.model.get( shouldCapture ) : undefined;
 		}
 	};
 
@@ -10595,6 +10742,15 @@ function initLink ( model, key ) {
 	return model._link;
 }
 
+var specialModels = {
+	'@this': function _this( root ) { return root.getRactiveModel(); },
+	'@global': function _global() { return GlobalModel; },
+	'@shared': function _shared() { return SharedModel$1; },
+	'@style': function _style( root ) { return root.getRactiveModel().joinKey( 'cssData' ); },
+	'@helpers': function _helpers(root) { return root.getHelpers(); }
+};
+specialModels['@'] = specialModels['@this'];
+
 var RootModel = (function (Model) {
 	function RootModel ( options ) {
 		Model.call( this, null, null );
@@ -10606,9 +10762,6 @@ var RootModel = (function (Model) {
 		this.value = options.data;
 		this.adaptors = options.adapt;
 		this.adapt();
-
-		this.computationContext = options.ractive;
-		this.computations = {};
 	}
 
 	if ( Model ) RootModel.__proto__ = Model;
@@ -10619,19 +10772,12 @@ var RootModel = (function (Model) {
 		attachImplicits( this, fragment );
 	};
 
-	RootModel__proto__.compute = function compute ( key, signature ) {
-		var computation = new Computation( this, signature, key );
-		this.computations[ escapeKey( key ) ] = computation;
-
-		return computation;
-	};
-
 	RootModel__proto__.createLink = function createLink ( keypath, target, targetPath, options ) {
-		var keys$$1 = splitKeypath( keypath );
+		var keys = splitKeypath( keypath );
 
 		var model = this;
-		while ( keys$$1.length ) {
-			var key = keys$$1.shift();
+		while ( keys.length ) {
+			var key = keys.shift();
 			model = model.childByKey[ key ] || model.joinKey( key );
 		}
 
@@ -10643,22 +10789,18 @@ var RootModel = (function (Model) {
 	};
 
 	RootModel__proto__.get = function get ( shouldCapture, options ) {
-		var this$1 = this;
-
 		if ( shouldCapture ) { capture( this ); }
 
 		if ( !options || options.virtual !== false ) {
-			var result = this.getVirtual();
-			var keys$$1 = keys( this.computations );
-			var i = keys$$1.length;
-			while ( i-- ) {
-				result[ keys$$1[i] ] = this$1.computations[ keys$$1[i] ].get();
-			}
-
-			return result;
+			return this.getVirtual();
 		} else {
 			return this.value;
 		}
+	};
+
+	RootModel__proto__.getHelpers = function getHelpers () {
+		if ( !this.helpers ) { this.helpers = new SharedModel( this.ractive.helpers, 'helpers' ); }
+		return this.helpers;
 	};
 
 	RootModel__proto__.getKeypath = function getKeypath () {
@@ -10670,8 +10812,6 @@ var RootModel = (function (Model) {
 	};
 
 	RootModel__proto__.getValueChildren = function getValueChildren () {
-		var this$1 = this;
-
 		var children = Model.prototype.getValueChildren.call( this, this.value );
 
 		this.children.forEach( function (child) {
@@ -10682,47 +10822,32 @@ var RootModel = (function (Model) {
 			}
 		});
 
-		for ( var k in this$1.computations ) {
-			children.push( this$1.computations[k] );
-		}
-
 		return children;
 	};
 
 	RootModel__proto__.has = function has ( key ) {
-		var value = this.value;
-		var unescapedKey = unescapeKey( key );
+		if ( key[0] === '~' && key[1] === '/' ) { key = key.slice( 2 ); }
+		if ( specialModels[ key ] || key === '' ) { return true; }
 
-		if ( unescapedKey === '@this' || unescapedKey === '@global' || unescapedKey === '@shared' || unescapedKey === '@style' ) { return true; }
-		if ( unescapedKey[0] === '~' && unescapedKey[1] === '/' ) { unescapedKey = unescapedKey.slice( 2 ); }
-		if ( key === '' || hasOwn( value, unescapedKey ) ) { return true; }
+		if ( Model.prototype.has.call( this, key ) ) {
+			return true;
+		} else {
+			var unescapedKey = unescapeKey( key );
 
-		// mappings/links and computations
-		if ( key in this.computations || this.childByKey[unescapedKey] && this.childByKey[unescapedKey]._link ) { return true; }
-
-		// We climb up the constructor chain to find if one of them contains the unescapedKey
-		var constructor = value.constructor;
-		while ( constructor !== Function && constructor !== Array && constructor !== Object ) {
-			if ( hasOwn( constructor.prototype, unescapedKey ) ) { return true; }
-			constructor = constructor.constructor;
+			// mappings/links and computations
+			if ( this.childByKey[unescapedKey] && this.childByKey[unescapedKey]._link ) { return true; }
 		}
-
-		return false;
 	};
 
 	RootModel__proto__.joinKey = function joinKey ( key, opts ) {
-		if ( key[0] === '@' ) {
-			if ( key === '@this' || key === '@' ) { return this.getRactiveModel(); }
-			if ( key === '@global' ) { return GlobalModel; }
-			if ( key === '@shared' ) { return SharedModel$1; }
-			if ( key === '@style' ) { return this.getRactiveModel().joinKey( 'cssData' ); }
-			return;
-		}
-
 		if ( key[0] === '~' && key[1] === '/' ) { key = key.slice( 2 ); }
 
-		return hasOwn( this.computations, key ) ? this.computations[ key ] :
-		       Model.prototype.joinKey.call( this, key, opts );
+		if ( key[0] === '@' ) {
+			var fn = specialModels[key];
+			if ( fn ) { return fn( this ); }
+		} else {
+			return Model.prototype.joinKey.call( this, key, opts );
+		}
 	};
 
 	RootModel__proto__.set = function set ( value ) {
@@ -10748,15 +10873,6 @@ var RootModel = (function (Model) {
 
 	RootModel__proto__.retrieve = function retrieve () {
 		return this.wrapper ? this.wrapper.get() : this.value;
-	};
-
-	RootModel__proto__.teardown = function teardown () {
-		var this$1 = this;
-
-		Model.prototype.teardown.call(this);
-		for ( var k in this$1.computations ) {
-			this$1.computations[ k ].teardown();
-		}
 	};
 
 	return RootModel;
@@ -10791,53 +10907,6 @@ function detachImplicits ( model ) {
 	}
 }
 
-function getComputationSignature ( ractive, key, signature ) {
-	var getter;
-	var setter;
-
-	// useful for debugging
-	var getterString;
-	var getterUseStack;
-	var setterString;
-
-	if ( isFunction( signature ) ) {
-		getter = bind$1( signature, ractive );
-		getterString = signature.toString();
-		getterUseStack = true;
-	}
-
-	if ( isString( signature ) ) {
-		getter = createFunctionFromString( signature, ractive );
-		getterString = signature;
-	}
-
-	if ( isObjectType( signature ) ) {
-		if ( isString( signature.get ) ) {
-			getter = createFunctionFromString( signature.get, ractive );
-			getterString = signature.get;
-		} else if ( isFunction( signature.get ) ) {
-			getter = bind$1( signature.get, ractive );
-			getterString = signature.get.toString();
-			getterUseStack = true;
-		} else {
-			fatal( '`%s` computation must have a `get()` method', key );
-		}
-
-		if ( isFunction( signature.set ) ) {
-			setter = bind$1( signature.set, ractive );
-			setterString = signature.set.toString();
-		}
-	}
-
-	return {
-		getter: getter,
-		setter: setter,
-		getterString: getterString,
-		setterString: setterString,
-		getterUseStack: getterUseStack
-	};
-}
-
 function subscribe ( instance, options, type ) {
 	var subs = ( instance.constructor[ ("_" + type) ] || [] ).concat( toPairs( options[ type ] || [] ) );
 	var single = type === 'on' ? 'once' : (type + "Once");
@@ -10867,6 +10936,11 @@ var registryNames$1 = [
 	'transitions'
 ];
 
+var protoRegistries = [
+	'computed',
+	'helpers'
+];
+
 var uid = 0;
 
 function construct ( ractive, options ) {
@@ -10893,6 +10967,12 @@ function construct ( ractive, options ) {
 		ractive[ name ] = assign( create( ractive.constructor[ name ] || null ), options[ name ] );
 	}
 
+	i = protoRegistries.length;
+	while ( i-- ) {
+		var name$1 = protoRegistries[ i ];
+		ractive[ name$1 ] = assign( create( ractive.constructor.prototype[ name$1 ] ), options[ name$1 ] );
+	}
+
 	if ( ractive._attributePartial ) {
 		ractive.partials['extra-attributes'] = ractive._attributePartial;
 		delete ractive._attributePartial;
@@ -10907,13 +10987,8 @@ function construct ( ractive, options ) {
 
 	ractive.viewmodel = viewmodel;
 
-	// Add computed properties
-	var computed = assign( create( ractive.constructor.prototype.computed ), options.computed );
-
-	for ( var key in computed ) {
-		if ( key === '__proto__' ) { continue; }
-		var signature = getComputationSignature( ractive, key, computed[ key ] );
-		viewmodel.compute( key, signature );
+	for ( var k in ractive.computed ) {
+		compute.call( ractive, k, ractive.computed[k] );
 	}
 }
 
@@ -11211,11 +11286,10 @@ var Component = (function (Item) {
 				}
 			}
 		} else {
+			render$1( this.instance, target, null, occupants );
 
 			this.attributes.forEach( render );
 			this.eventHandlers.forEach( render );
-
-			render$1( this.instance, target, null, occupants );
 
 			this.rendered = true;
 		}
@@ -16661,13 +16735,15 @@ var configHook = new Hook( 'config' );
 var initHook = new HookQueue( 'init' );
 
 function initialise ( ractive, userOptions, options ) {
-	keys( ractive.viewmodel.computations ).forEach( function (key) {
-		var computation = ractive.viewmodel.computations[ key ];
-
-		if ( hasOwn( ractive.viewmodel.value, key ) ) {
-			computation.set( ractive.viewmodel.value[ key ] );
+	// initialize settable computeds
+	var computed = ractive.viewmodel.computed;
+	if ( computed ) {
+		for ( var k in computed ) {
+			if ( k in ractive.viewmodel.value && computed[k] && !computed[k].isReadonly ) {
+				computed[k].set( ractive.viewmodel.value[k] );
+			}
 		}
-	});
+	}
 
 	// init config from Parent and options
 	config.init( ractive.constructor, ractive, userOptions );
@@ -17085,6 +17161,7 @@ var proto = {
 	add: Ractive$add,
 	animate: Ractive$animate,
 	attachChild: attachChild,
+	compute: Ractive$compute,
 	detach: Ractive$detach,
 	detachChild: detachChild,
 	find: Ractive$find,
@@ -17254,9 +17331,8 @@ function extendOne ( Parent, options, Target ) {
 
 	dataConfigurator.extend( Parent, proto, options, Child );
 
-	if ( options.computed ) {
-		proto.computed = assign( create( Parent.prototype.computed ), options.computed );
-	}
+	proto.computed = assign( create( Parent.prototype.computed ), options.computed );
+	proto.helpers = assign( create( Parent.prototype.helpers ), options.helpers );
 
 	return Child;
 }
@@ -17333,8 +17409,8 @@ Ractive.prototype.constructor = Ractive;
 Ractive.defaults = Ractive.prototype;
 
 // share defaults with the parser
-shared.defaults = Ractive.defaults;
-shared.Ractive = Ractive;
+shared$1.defaults = Ractive.defaults;
+shared$1.Ractive = Ractive;
 
 // static properties
 defineProperties( Ractive, {
