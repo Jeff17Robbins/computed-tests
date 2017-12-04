@@ -16,6 +16,7 @@ store.compute(
 	'payment', ['amount', 'interest1200', 'years'], (amount, interest1200, years) => Math.round(amount * interest1200 * (1 + 1 / (Math.pow(1 + interest1200, years * 12) - 1 )))
 );
 
+/*
 var t0 = performance.now();
 for (var i = 0; i< 200000; i++) {
 	var interest = store.get('interest');
@@ -26,6 +27,7 @@ for (var i = 0; i< 200000; i++) {
 var t1 = performance.now();
 	
 console.log(t1-t0, 'milliseconds');
+*/
 
 function create_main_fragment(state, component) {
 
