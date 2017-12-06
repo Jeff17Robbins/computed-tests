@@ -77,7 +77,7 @@
       document.getElementById("svelte-test").onclick = function() {
           var interest = store.get('interest');
           interest += .1;
-          store.set('interest', interest);
+          store.set({interest: interest});
           var payment_svelte = store.get('payment');
           console.log('svelte-test', payment_svelte);
       }
