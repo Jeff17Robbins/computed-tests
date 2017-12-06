@@ -63,7 +63,7 @@
 
     <script>
       var incr = .0001;
-      var iters = 1000000;
+      var iters = 500000;
       var i;
       var t0, t1;
       
@@ -74,7 +74,7 @@
           var payment_S = s_payment();
         }
         t1 = performance.now();
-        console.log('s-test', payment_S, t1-t0);
+        console.log('s-test', payment_S, iters, 'ops', round(t1-t0), 'ms');
       }
       document.getElementById("swrapper-test").onclick = function() {
         t0 = performance.now();
@@ -85,7 +85,7 @@
           var payment_s_wrapper = s_wrapper.get('payment');
         }
         t1 = performance.now();
-        console.log('swrapper-test', payment_s_wrapper, t1-t0);
+        console.log('swrapper-test', payment_s_wrapper, iters, 'ops', round(t1-t0), 'ms';
       }
       document.getElementById("svelte-test").onclick = function() {
         t0 = performance.now();
@@ -96,7 +96,7 @@
           var payment_svelte = store.get('payment');
         }
         t1 = performance.now();
-        console.log('svelte-test', payment_svelte, t1-t0);
+        console.log('svelte-test', payment_svelte, iters, 'ops', round(t1-t0), 'ms');
       }
       document.getElementById("ractive-test").onclick = function() {
         t0 = performance.now();
@@ -105,7 +105,7 @@
           var payment_ractive = r.get('payment');
         }
         t1 = performance.now();
-        console.log('ractive-test', payment_ractive, t1-t0);
+        console.log('ractive-test', payment_ractive, iters, 'ops', round(t1-t0), 'ms');
       }
     </script>
   </body>
