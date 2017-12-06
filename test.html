@@ -14,13 +14,19 @@
       var s_payment = S(() => Math.round(s_amount() * s_interest1200() * (1 + 1 / (Math.pow(1 + s_interest1200(), s_years() * 12) - 1))));
 
       var s_wrapper = {};
+      var sw_amount = S.data(100000);
+      var sw_interest = S.data(3.92);
+      var sw_years = S.data(30);
+      var sw_interest1200 = S(() => sw_interest() / 1200);
+      var sw_payment = S(() => Math.round(sw_amount() * sw_interest1200() * (1 + 1 / (Math.pow(1 + sw_interest1200(), sw_years() * 12) - 1))));
+
       s_wrapper.get = function(key) {
-          if (key === 'payment') return s_payment();
-          if (key === 'interest') return s_interest();
+          if (key === 'payment') return sw_payment();
+          if (key === 'interest') return sw_interest();
       };
       s_wrapper.set = function(key, value) {
           if (key === 'interest')
-              return s_interest(value);
+              return sw_interest(value);
       };
 
       // svelte setup in svelte-app.js
