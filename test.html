@@ -36,19 +36,6 @@
               payment: "Math.round(amount * interest1200 * (1 + 1 / (Math.pow(1 + interest1200 , years * 12) - 1 )))"
           }
       });
-      
-      document.getElementById("s-test").onclick = function() {
-
-      }
-      document.getElementById("swrapper-test").onclick = function() {
-
-      }
-      document.getElementById("svelte-test").onclick = function() {
-
-      }
-      document.getElementById("ractive-test").onclick = function() {
-
-      }
     </script>
   </head>
   <body>
@@ -63,6 +50,21 @@
     </button>
     <button id=ractive-test>
     Ractive test
-    </button>    
+    </button>
+    
+    <script>
+      document.getElementById("s-test").onclick = function() {
+
+      }
+      document.getElementById("swrapper-test").onclick = function() {
+
+      }
+      document.getElementById("svelte-test").onclick = function() {
+
+      }
+      document.getElementById("ractive-test").onclick = function() {
+
+      }
+    </script>
   </body>
 </html>
