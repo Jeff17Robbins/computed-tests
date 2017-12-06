@@ -57,26 +57,26 @@
 
     <script>
       document.getElementById("s-test").onclick = function() {
-          s_interest(s_interest() + .0001);
+          s_interest(s_interest() + .1);
           var payment_S = s_payment();
           console.log('s-test', payment_S);
       }
       document.getElementById("swrapper-test").onclick = function() {
           var interest_s_wrapper = s_wrapper.get('interest');
-          interest_s_wrapper += .0001;
+          interest_s_wrapper += .1;
           s_wrapper.set('interest', interest_s_wrapper);
           var payment_s_wrapper = s_wrapper.get('payment');
           console.log('swrapper-test', payment_s_wrapper);
       }
       document.getElementById("svelte-test").onclick = function() {
           var interest = store.get('interest');
-          interest += .0001;
+          interest += .1;
           store.set('interest', interest);
           var payment_svelte = store.get('payment');
           console.log('svelte-test', payment_svelte);
       }
       document.getElementById("ractive-test").onclick = function() {
-          r.add('interest', .0001);
+          r.add('interest', .1);
           var payment_ractive = r.get('payment');
           console.log('ractive-test', payment_ractive);
       }
