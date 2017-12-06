@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>computed test</title>
+    <script src="s-test.js"></script>
+    <script src="svelte-app.js"></script>
+    <script src="ractive-orig.js"></script>
+    <script>
+      var s_amount = S.data(100000);
+      var s_interest = S.data(3.92);
+      var s_years = S.data(30);
+      var s_interest1200 = S(() => s_interest() / 1200);
+      var s_payment = S(() => Math.round(s_amount() * s_interest1200() * (1 + 1 / (Math.pow(1 + s_interest1200(), s_years() * 12) - 1))));
+
+      var s_wrapper = {};
+      s_wrapper.get = function(key) {
+          if (key === 'payment') return s_payment();
+          if (key === 'interest') return s_interest();
+      };
+      s_wrapper.set = function(key, value) {
+          if (key === 'interest')
+              return s_interest(value);
+      };
+
+      // svelte setup in svelte-app.js
+
+      var r = new Ractive({
+          data: {
+              amount: 100000,
+              interest: 3.92,
+              years: 30
+          },
+          computed: {
+              interest1200: "interest / 1200",
+              payment: "Math.round(amount * interest1200 * (1 + 1 / (Math.pow(1 + interest1200 , years * 12) - 1 )))"
+          }
+      });
+    </script>
+  </head>
+  <body>
+  </body>
+</html>
