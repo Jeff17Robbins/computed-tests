@@ -42,6 +42,33 @@
               payment: "Math.round(amount * interest1200 * (1 + 1 / (Math.pow(1 + interest1200 , years * 12) - 1 )))"
           }
       });
+      
+      var SAdaptor = {
+        filter: function(object, keypath, ractive) {
+          return true;
+        },
+        wrap: function (ractive, object, keypath, prefixer) {
+          debugger;
+          //object.on('change', function () { ractive.set(prefixer({...})); });
+          
+          return {
+            teardown: function() {
+              debugger;
+            },
+            get: function() {
+              debugger;
+            },
+            set: function (key, val) {
+              debugger;
+            },
+            // called on ractive.set on root (return false = die)
+            reset: function(data) {
+              debugger;
+            }
+          };
+        }
+      };
+      
       var ra = new Ractive({
           data: {
               amount: 100000,
@@ -51,7 +78,8 @@
           computed: {
               interest1200: "interest / 1200",
               payment: "Math.round(amount * interest1200 * (1 + 1 / (Math.pow(1 + interest1200 , years * 12) - 1 )))"
-          }
+          },
+          adapt: [ SAdaptor ]
       });
     </script>
   </head>
