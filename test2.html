@@ -55,8 +55,8 @@
           var key = keypath;
           
           return {
-            //teardown: function() {
-            //},
+            teardown: function() {
+            },
             get: function() {
               if (key === 'amount') return s_amount();
               if (key === 'interest') return s_interest();
