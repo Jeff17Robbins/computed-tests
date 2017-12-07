@@ -53,6 +53,7 @@
         wrap: function (ractive, object, keypath, prefixer) {
           debugger;
           //object.on('change', function () { ractive.set(prefixer({...})); });
+          var key = keypath;
           
           return {
             teardown: function() {
@@ -60,9 +61,16 @@
             },
             get: function() {
               debugger;
+              if (key === 'amount') return s_amount();
+              if (key === 'interest') return s_interest();
+              if (key === 'years') return s_years();
+              if (key === 'interest1200') return s_interest1200();
+              if (key === 'payment') return s_payment();
             },
-            set: function (key, val) {
+            set: function(key, val) {
               debugger;
+              if (key === 'interest')
+                  return s_interest(val);
             },
             // called on ractive.set on root (return false = die)
             reset: function(data) {
