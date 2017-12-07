@@ -45,7 +45,7 @@
       
       var SAdaptor = {
         filter: function(object, keypath, ractive) {
-          if (keypath in ['amount', 'interest', 'years', 'interest1200', 'payment'])
+          if (['amount', 'interest', 'years', 'interest1200', 'payment'].indexOf(keypath) !== -1)
             return true;
           else
             return false;
