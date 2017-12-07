@@ -68,8 +68,10 @@
               if (key === 'interest')
                   return s_interest(val);
             },
-            //reset: function(data) {
-            //}
+            reset: function(data) {
+              if (key === 'interest')
+                return s_interest(data);
+            }
           };
         }
       };
