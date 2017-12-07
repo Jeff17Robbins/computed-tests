@@ -45,7 +45,10 @@
       
       var SAdaptor = {
         filter: function(object, keypath, ractive) {
-          return true;
+          if (keypath === 'amount')
+            return true;
+          else
+            return false;
         },
         wrap: function (ractive, object, keypath, prefixer) {
           debugger;
