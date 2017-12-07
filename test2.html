@@ -76,7 +76,7 @@
         }
       };
       
-      var ra = new Ractive({
+      var rad = new Ractive({
           data: {
               amount: 100000,
               interest: 3.92,
@@ -87,6 +87,17 @@
               payment: "Math.round(amount * interest1200 * (1 + 1 / (Math.pow(1 + interest1200 , years * 12) - 1 )))"
           },
           adapt: [ SAdaptor ]
+      });
+      var ra = new Ractive({
+          data: {
+              amount: 100000,
+              interest: 3.92,
+              years: 30
+          },
+          computed: {
+              interest1200: "interest / 1200",
+              payment: "Math.round(amount * interest1200 * (1 + 1 / (Math.pow(1 + interest1200 , years * 12) - 1 )))"
+          }
       });
     </script>
   </head>
@@ -105,6 +116,10 @@
 
     <button id=ractive-test>
     Ractive test
+    </button>
+    
+    <button id=ractive-alt-test>
+    Ractive alt test
     </button>
     
     <button id=ractive_adaptor-test>
@@ -157,11 +172,22 @@
         t1 = performance.now();
         console.log('ractive-test', payment_ractive, iters, 'ops', Math.round(t1-t0), 'ms');
       }
+      document.getElementById("ractive-alt-test").onclick = function() {
+        t0 = performance.now();
+        for (i = 0; i < iters; i++) {
+          var t_interest = ra.get('interest');
+          t_interest += incr;
+          ra.set('interest', t_interest); 
+          var payment_ractive_alt = ra.get('payment');
+        }
+        t1 = performance.now();
+        console.log('ractive-alt-test', payment_ractive_alt, iters, 'ops', Math.round(t1-t0), 'ms');
+      }
       document.getElementById("ractive_adaptor-test").onclick = function() {
         t0 = performance.now();
         for (i = 0; i < iters; i++) {
-          ra.add('interest', incr);
-          var payment_ractive_adaptor = ra.get('payment');
+          rad.add('interest', incr);
+          var payment_ractive_adaptor = rad.get('payment');
         }
         t1 = performance.now();
         console.log('ractive_adaptor-test', payment_ractive_adaptor, iters, 'ops', Math.round(t1-t0), 'ms');
