@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>computed test</title>
+    <script src="s-test.js"></script>
+    <script src="svelte-app.js"></script>
+    <script src="ractive.js"></script>
+    <script>
+      var s_amount = S.data(100000);
+      var s_interest = S.data(3.92);
+      var s_years = S.data(30);
+      var s_interest1200 = S(() => s_interest() / 1200);
+      var s_payment = S(() => Math.round(s_amount() * s_interest1200() * (1 + 1 / (Math.pow(1 + s_interest1200(), s_years() * 12) - 1))));
+
+      var s_wrapper = {};
+      var sw_amount = S.data(100000);
+      var sw_interest = S.data(3.92);
+      var sw_years = S.data(30);
+      var sw_interest1200 = S(() => sw_interest() / 1200);
+      var sw_payment = S(() => Math.round(sw_amount() * sw_interest1200() * (1 + 1 / (Math.pow(1 + sw_interest1200(), sw_years() * 12) - 1))));
+
+      s_wrapper.get = function(key) {
+          if (key === 'payment') return sw_payment();
+          if (key === 'interest') return sw_interest();
+      };
+      s_wrapper.set = function(key, value) {
+          if (key === 'interest')
+              return sw_interest(value);
+      };
+
+      // svelte setup in svelte-app.js
+
+      var r = new Ractive({
+          data: {
+              amount: 100000,
+              interest: 3.92,
+              years: 30
+          },
+          computed: {
+              interest1200: "interest / 1200",
+              payment: "Math.round(amount * interest1200 * (1 + 1 / (Math.pow(1 + interest1200 , years * 12) - 1 )))"
+          }
+      });
+      var ra = new Ractive({
+          data: {
+              amount: 100000,
+              interest: 3.92,
+              years: 30
+          },
+          computed: {
+              interest1200: "interest / 1200",
+              payment: "Math.round(amount * interest1200 * (1 + 1 / (Math.pow(1 + interest1200 , years * 12) - 1 )))"
+          }
+      });
+    </script>
+  </head>
+  <body>
+    <button id=s-test>
+    S test
+    </button>
+
+    <button id=swrapper-test>
+    S Wrapper test
+    </button>
+
+    <button id=svelte-test>
+    Svelte test
+    </button>
+
+    <button id=ractive-test>
+    Ractive test
+    </button>
+    
+    <button id=ractive_adaptor-test>
+    Ractive Adaptor test
+    </button>
+
+    <script>
+      var incr = .0001;
+      var iters = 500000;
+      var i;
+      var t0, t1;
+      
+      document.getElementById("s-test").onclick = function() {
+        t0 = performance.now();
+        for (i = 0; i < iters; i++) {
+          s_interest(s_interest() + incr);
+          var payment_S = s_payment();
+        }
+        t1 = performance.now();
+        console.log('s-test', payment_S, iters, 'ops', Math.round(t1-t0), 'ms');
+      }
+      document.getElementById("swrapper-test").onclick = function() {
+        t0 = performance.now();
+        for (i = 0; i < iters; i++) {
+          var interest_s_wrapper = s_wrapper.get('interest');
+          interest_s_wrapper += incr;
+          s_wrapper.set('interest', interest_s_wrapper);
+          var payment_s_wrapper = s_wrapper.get('payment');
+        }
+        t1 = performance.now();
+        console.log('swrapper-test', payment_s_wrapper, iters, 'ops', Math.round(t1-t0), 'ms');
+      }
+      document.getElementById("svelte-test").onclick = function() {
+        t0 = performance.now();
+        for (i = 0; i < iters; i++) {
+          var interest = store.get('interest');
+          interest += incr;
+          store.set({interest: interest});
+          var payment_svelte = store.get('payment');
+        }
+        t1 = performance.now();
+        console.log('svelte-test', payment_svelte, iters, 'ops', Math.round(t1-t0), 'ms');
+      }
+      document.getElementById("ractive-test").onclick = function() {
+        t0 = performance.now();
+        for (i = 0; i < iters; i++) {
+          r.add('interest', incr);
+          var payment_ractive = r.get('payment');
+        }
+        t1 = performance.now();
+        console.log('ractive-test', payment_ractive, iters, 'ops', Math.round(t1-t0), 'ms');
+      }
+      document.getElementById("ractive_adaptor-test").onclick = function() {
+        t0 = performance.now();
+        for (i = 0; i < iters; i++) {
+          ra.add('interest', incr);
+          var payment_ractive_adaptor = ra.get('payment');
+        }
+        t1 = performance.now();
+        console.log('ractive_adaptor-test', payment_ractive_adaptor, iters, 'ops', Math.round(t1-t0), 'ms');
+      }
+    </script>
+  </body>
+</html>
